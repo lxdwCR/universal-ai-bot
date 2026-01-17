@@ -1,4 +1,4 @@
--- Clean ESP + Silent Aim (No Hooks) + Right Shift Menu
+-- Working ESP + Mouse-Based Silent Aim + Right Shift Menu
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
@@ -18,16 +18,18 @@ local AIMBOT_MAX_DISTANCE = 200
 
 local localPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
+local mouse = localPlayer:GetMouse()
 local menuVisible = true
+
+-- Silent aim variables
+local silentAimTarget = nil
+local targetPosition = nil
+local isAiming = false
 
 -- Drawing objects
 local fovCircle = Drawing.new("Circle")
 local fovCircleCenter = Drawing.new("Circle")
 local playerDrawings = {}
-
--- Silent aim variables
-local silentAimTarget = nil
-local lastMouseHit = nil
 
 -- Setup FOV circle
 fovCircle.Visible = false
@@ -64,7 +66,7 @@ local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 25)
 Title.Position = UDim2.new(0, 0, 0, 0)
 Title.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-Title.Text = "ESP + Silent [Right Shift]"
+Title.Text = "ESP + Silent Aim [Right Shift]"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.Font = Enum.Font.SourceSans
 Title.TextSize = 14
@@ -209,7 +211,7 @@ local function updateESP()
                 drawings.box.Position = Vector2.new(rootPos.X - width/2, topPos.Y)
                 drawings.box.Visible = true
                 
-                -- Update head circle
+                -- Update head circle (shows silent aim target)
                 drawings.headCircle.Position = Vector2.new(headPos.X, headPos.Y)
                 drawings.headCircle.Visible = (SILENT_AIM_ENABLED or PSILENT_ENABLED) and player == silentAimTarget
                 drawings.headCircle.Color = PSILENT_ENABLED and Color3.fromRGB(255, 0, 255) or SILENT_AIM_COLOR
@@ -249,30 +251,61 @@ local function updateESP()
     end
 end
 
--- Silent aim without hooks - uses mouse targeting
+-- Mouse-based silent aim that actually redirects shots
 local function applySilentAim()
-    if not SILENT_AIM_ENABLED and not PSILENT_ENABLED then return end
+    if not SILENT_AIM_ENABLED and not PSILENT_ENABLED then
+        TargetLabel.Text = "Target: None"
+        return
+    end
     
     silentAimTarget = getClosestPlayer()
     
     if silentAimTarget and silentAimTarget.Character and silentAimTarget.Character:FindFirstChild("Head") then
         local targetHead = silentAimTarget.Character.Head
-        local targetPos = targetHead.Position + Vector3.new(0, 0.5, 0)
+        targetPosition = targetHead.Position + Vector3.new(0, 0.5, 0)
         
         -- Add prediction for PSilent
         if PSILENT_ENABLED and silentAimTarget.Character:FindFirstChild("HumanoidRootPart") then
             local velocity = silentAimTarget.Character.HumanoidRootPart.Velocity
-            targetPos = targetPos + velocity * 0.1
+            targetPosition = targetPosition + velocity * 0.1
         end
         
-        -- Store target position for bullet redirection
-        lastMouseHit = targetPos
-        
-        -- Update target label
         TargetLabel.Text = "Target: " .. silentAimTarget.Name
+        
+        -- Calculate where to aim to hit the target
+        local cameraPos = Camera.CFrame.Position
+        local targetDirection = (targetPosition - cameraPos).Unit
+        
+        -- Get current mouse position and calculate adjustment
+        local mousePos = Vector2.new(mouse.X, mouse.Y)
+        local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+        
+        -- Calculate target screen position
+        local targetScreenPos, targetVisible = Camera:WorldToViewportPoint(targetPosition)
+        
+        if targetVisible and targetScreenPos.Z > 0 then
+            -- Calculate the offset needed to aim at target
+            local targetScreen = Vector2.new(targetScreenPos.X, targetScreenPos.Y)
+            local offset = targetScreen - screenCenter
+            
+            -- Only apply if target is within reasonable range
+            if offset.Magnitude < AIMBOT_FOV * 2 then
+                -- Apply subtle mouse movement to aim at target
+                local sensitivity = 0.3 -- Subtle adjustment
+                local adjustedX = mousePos.X + offset.X * sensitivity
+                local adjustedY = mousePos.Y + offset.Y * sensitivity
+                
+                -- Keep mouse within screen bounds
+                adjustedX = math.clamp(adjustedX, 0, Camera.ViewportSize.X)
+                adjustedY = math.clamp(adjustedY, 0, Camera.ViewportSize.Y)
+                
+                -- Move mouse cursor to aim at target (this affects where you shoot)
+                mousemoverel(offset.X * sensitivity * 0.1, offset.Y * sensitivity * 0.1)
+            end
+        end
     else
         TargetLabel.Text = "Target: None"
-        lastMouseHit = nil
+        targetPosition = nil
     end
 end
 
@@ -365,11 +398,11 @@ RunService.RenderStepped:Connect(function()
     -- Update ESP
     updateESP()
     
-    -- Apply silent aim
+    -- Apply silent aim through mouse movement
     applySilentAim()
 end)
 
-print("Clean ESP + Silent Aim (No Hooks) + Right Shift Menu Loaded!")
+print("Working ESP + Mouse-Based Silent Aim + Right Shift Menu Loaded!")
 print("Right Shift - Toggle Menu")
 print("X - Toggle PSilent")
-print("Silent aim works through mouse targeting - no camera interference")
+print("Silent aim now works through subtle mouse movement redirection")
