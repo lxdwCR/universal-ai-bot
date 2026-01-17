@@ -1,4 +1,4 @@
--- Fixed ESP + pSilent (Natural Camera) + Right Shift Menu Script
+-- Fixed ESP + pSilent (Weapon Compatible) + Right Shift Menu Script
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
@@ -7,12 +7,10 @@ local Workspace = game:GetService("Workspace")
 
 -- Configuration
 local ESP_ENABLED = true
-local AIMBOT_ENABLED = false
 local SILENT_AIM_ENABLED = false
 local PSILENT_ENABLED = false
 local SHOW_FOV_CIRCLE = true
 local BOX_COLOR = Color3.fromRGB(255, 0, 0)
-local AIMBOT_COLOR = Color3.fromRGB(0, 255, 0)
 local SILENT_AIM_COLOR = Color3.fromRGB(255, 165, 0)
 local FOV_CIRCLE_COLOR = Color3.fromRGB(255, 255, 255)
 local AIMBOT_FOV = 150
@@ -23,6 +21,11 @@ local silentAimTarget = nil
 local localPlayer = Players.LocalPlayer
 local mouse = localPlayer:GetMouse()
 local Camera = Workspace.CurrentCamera
+
+-- Weapon compatibility
+local lastRaycastTime = 0
+local raycastCooldown = 0.01 -- Prevent spam
+local originalGunRaycasts = {} -- Store original gun behavior
 
 -- Menu toggle
 local menuVisible = true
@@ -60,18 +63,16 @@ local function updateFOVCircle()
     
     fovCircle.Position = screenCenter
     fovCircle.Radius = AIMBOT_FOV
-    fovCircle.Visible = SHOW_FOV_CIRCLE and (AIMBOT_ENABLED or SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
+    fovCircle.Visible = SHOW_FOV_CIRCLE and (SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
     
     fovCircleCenter.Position = screenCenter
-    fovCircleCenter.Visible = SHOW_FOV_CIRCLE and (AIMBOT_ENABLED or SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
+    fovCircleCenter.Visible = SHOW_FOV_CIRCLE and (SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
     
     -- Change color based on active mode
     if PSILENT_ENABLED then
         fovCircle.Color = Color3.fromRGB(255, 0, 255)
     elseif SILENT_AIM_ENABLED then
         fovCircle.Color = SILENT_AIM_COLOR
-    elseif AIMBOT_ENABLED then
-        fovCircle.Color = AIMBOT_COLOR
     else
         fovCircle.Color = FOV_CIRCLE_COLOR
     end
@@ -146,7 +147,7 @@ local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(0.9, 0, 0, 20)
 StatusLabel.Position = UDim2.new(0.05, 0, 0.49, 0)
 StatusLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-StatusLabel.Text = "Press X: Silent | Z: Normal"
+StatusLabel.Text = "Press X: Silent Aim Modes"
 StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 StatusLabel.Font = Enum.Font.SourceSans
 StatusLabel.TextSize = 12
@@ -407,16 +408,23 @@ local function updateESP()
     end
 end
 
--- Silent aim hook (NO camera modification - only bullet redirection)
+-- Fixed silent aim hook (weapon compatible)
 local function setupSilentAim()
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
         local method = getnamecallmethod()
         local args = {...}
         local self = args[1]
+        local currentTime = tick()
+        
+        -- Rate limiting to prevent spam and weapon breakage
+        if currentTime - lastRaycastTime < raycastCooldown then
+            return oldNamecall(...)
+        end
         
         -- Only intercept if silent aim is enabled and not from our own scripts
         if (SILENT_AIM_ENABLED or PSILENT_ENABLED) and self == workspace and not checkcaller() then
+            -- Get target only when needed
             silentAimTarget = getClosestPlayer()
             
             if silentAimTarget and playerESP[silentAimTarget] and playerESP[silentAimTarget].character:FindFirstChild("Head") then
@@ -426,25 +434,46 @@ local function setupSilentAim()
                 -- Add prediction for moving targets (PSilent)
                 if PSILENT_ENABLED and silentAimTarget.Character:FindFirstChild("HumanoidRootPart") then
                     local velocity = silentAimTarget.Character.HumanoidRootPart.Velocity
-                    targetPos = targetPos + velocity * 0.1 -- Simple prediction
+                    targetPos = targetPos + velocity * 0.1
                 end
                 
-                -- Handle different raycast methods - ONLY redirect bullets, NO camera changes
+                -- Handle different raycast methods - ONLY redirect bullets, preserve weapon functionality
                 if method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist" or 
                    method == "FindPartOnRay" or method == "findPartOnRay" then
+                    
                     local ray = args[2]
-                    if ray then
-                        local origin = ray.Origin
-                        local direction = (targetPos - origin).Unit * ray.Direction.Magnitude
-                        args[2] = Ray.new(origin, direction)
-                        return oldNamecall(unpack(args))
+                    if ray and ray.Origin and ray.Direction then
+                        -- Check if this is a weapon raycast (has reasonable direction)
+                        local originalDirection = ray.Direction
+                        if originalDirection.Magnitude > 0.1 then
+                            -- Only redirect if it's a reasonable weapon shot
+                            local origin = ray.Origin
+                            local direction = (targetPos - origin).Unit * originalDirection.Magnitude
+                            
+                            -- Validate the redirect makes sense (not too extreme)
+                            local angle = math.acos(math.clamp(originalDirection.Unit:Dot(direction.Unit), -1, 1))
+                            if angle < math.rad(90) then -- Only redirect within 90 degrees
+                                args[2] = Ray.new(origin, direction)
+                                lastRaycastTime = currentTime
+                                return oldNamecall(unpack(args))
+                            end
+                        end
                     end
                 elseif method == "Raycast" then
                     local origin = args[2]
-                    if origin then
-                        local direction = (targetPos - origin).Unit * (args[3] or Vector3.new(0, -1000, 0)).Magnitude
-                        args[3] = direction
-                        return oldNamecall(unpack(args))
+                    local direction = args[3]
+                    
+                    if origin and direction and direction.Magnitude > 0.1 then
+                        -- Validate direction change
+                        local originalDirection = direction
+                        local newDirection = (targetPos - origin).Unit * originalDirection.Magnitude
+                        
+                        local angle = math.acos(math.clamp(originalDirection.Unit:Dot(newDirection.Unit), -1, 1))
+                        if angle < math.rad(90) then -- Only redirect within 90 degrees
+                            args[3] = newDirection
+                            lastRaycastTime = currentTime
+                            return oldNamecall(unpack(args))
+                        end
                     end
                 end
             end
@@ -457,15 +486,15 @@ end
 -- Update mode label
 local function updateModeLabel()
     if PSILENT_ENABLED then
-        ModeLabel.Text = "Mode: PSilent (Natural Cam)"
+        ModeLabel.Text = "Mode: PSilent (Weapon Safe)"
     elseif SILENT_AIM_ENABLED then
-        ModeLabel.Text = "Mode: Silent Aim (Natural Cam)"
+        ModeLabel.Text = "Mode: Silent Aim (Weapon Safe)"
     else
         ModeLabel.Text = "Mode: Disabled"
     end
 end
 
--- Button event handlers (REMOVED normal aimbot - only silent aim now)
+-- Button event handlers
 ESPButton.MouseButton1Click:Connect(function()
     ESP_ENABLED = not ESP_ENABLED
     ESPButton.Text = ESP_ENABLED and "ESP: ON" or "ESP: OFF"
@@ -522,7 +551,7 @@ FOVButton.MouseButton1Click:Connect(function()
     updateFOVCircle()
 end)
 
--- Keybinds (REMOVED normal aimbot - only silent aim now)
+-- Keybinds
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     
@@ -618,12 +647,12 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
-print("Fixed ESP + pSilent (Natural Camera) + Right Shift Menu Script Loaded!")
+print("Fixed ESP + pSilent (Weapon Compatible) + Right Shift Menu Script Loaded!")
 print("Controls:")
 print("Right Shift - Toggle menu")
 print("X - Cycle through silent aim modes")
 print("Features:")
-print("- True pSilent (server-side lock, NO camera changes)")
-print("- Natural camera movement preserved")
-print("- Working silent aim with ray method hooks")
-print("- Toggleable menu with Right Shift")
+print("- Weapon-compatible silent aim")
+print("- No arm positioning issues")
+print("- Proper bullet redirection")
+print("- Clean hook implementation")
