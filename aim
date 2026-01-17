@@ -1,0 +1,629 @@
+-- Fixed ESP + pSilent (Natural Camera) + Right Shift Menu Script
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+-- Configuration
+local ESP_ENABLED = true
+local AIMBOT_ENABLED = false
+local SILENT_AIM_ENABLED = false
+local PSILENT_ENABLED = false
+local SHOW_FOV_CIRCLE = true
+local BOX_COLOR = Color3.fromRGB(255, 0, 0)
+local AIMBOT_COLOR = Color3.fromRGB(0, 255, 0)
+local SILENT_AIM_COLOR = Color3.fromRGB(255, 165, 0)
+local FOV_CIRCLE_COLOR = Color3.fromRGB(255, 255, 255)
+local AIMBOT_FOV = 150
+local AIMBOT_MAX_DISTANCE = 200
+
+-- Silent Aim Variables
+local silentAimTarget = nil
+local localPlayer = Players.LocalPlayer
+local mouse = localPlayer:GetMouse()
+local Camera = Workspace.CurrentCamera
+
+-- Menu toggle
+local menuVisible = true
+
+-- FOV Circle
+local fovCircle = nil
+local fovCircleCenter = nil
+
+-- Create FOV Circle
+local function createFOVCircle()
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Visible = SHOW_FOV_CIRCLE
+    fovCircle.Color = FOV_CIRCLE_COLOR
+    fovCircle.Thickness = 2
+    fovCircle.Radius = AIMBOT_FOV
+    fovCircle.Filled = false
+    fovCircle.NumSides = 32
+    fovCircle.Transparency = 0.7
+    
+    -- Center dot for FOV
+    fovCircleCenter = Drawing.new("Circle")
+    fovCircleCenter.Visible = SHOW_FOV_CIRCLE
+    fovCircleCenter.Color = FOV_CIRCLE_COLOR
+    fovCircleCenter.Thickness = 1
+    fovCircleCenter.Radius = 2
+    fovCircleCenter.Filled = true
+    fovCircleCenter.Transparency = 0.8
+end
+
+local function updateFOVCircle()
+    if not fovCircle then return end
+    
+    local camera = workspace.CurrentCamera
+    local screenCenter = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
+    
+    fovCircle.Position = screenCenter
+    fovCircle.Radius = AIMBOT_FOV
+    fovCircle.Visible = SHOW_FOV_CIRCLE and (AIMBOT_ENABLED or SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
+    
+    fovCircleCenter.Position = screenCenter
+    fovCircleCenter.Visible = SHOW_FOV_CIRCLE and (AIMBOT_ENABLED or SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
+    
+    -- Change color based on active mode
+    if PSILENT_ENABLED then
+        fovCircle.Color = Color3.fromRGB(255, 0, 255)
+    elseif SILENT_AIM_ENABLED then
+        fovCircle.Color = SILENT_AIM_COLOR
+    elseif AIMBOT_ENABLED then
+        fovCircle.Color = AIMBOT_COLOR
+    else
+        fovCircle.Color = FOV_CIRCLE_COLOR
+    end
+end
+
+-- UI Setup
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ESPGui"
+ScreenGui.Parent = CoreGui
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 240, 0, 280)
+MainFrame.Position = UDim2.new(0, 10, 0, 10)
+MainFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 30)
+Title.Position = UDim2.new(0, 0, 0, 0)
+Title.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+Title.Text = "ESP + pSilent [Right Shift]"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.SourceSans
+Title.TextSize = 16
+Title.Parent = MainFrame
+
+local ESPButton = Instance.new("TextButton")
+ESPButton.Size = UDim2.new(0, 100, 0, 30)
+ESPButton.Position = UDim2.new(0.05, 0, 0.13, 0)
+ESPButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+ESPButton.Text = "ESP: ON"
+ESPButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ESPButton.Font = Enum.Font.SourceSans
+ESPButton.TextSize = 14
+ESPButton.Parent = MainFrame
+
+local SilentAimButton = Instance.new("TextButton")
+SilentAimButton.Size = UDim2.new(0, 100, 0, 30)
+SilentAimButton.Position = UDim2.new(0.05, 0, 0.25, 0)
+SilentAimButton.BackgroundColor3 = Color3.fromRGB(170, 100, 0)
+SilentAimButton.Text = "Silent: OFF"
+SilentAimButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+SilentAimButton.Font = Enum.Font.SourceSans
+SilentAimButton.TextSize = 14
+SilentAimButton.Parent = MainFrame
+
+local PSilentButton = Instance.new("TextButton")
+PSilentButton.Size = UDim2.new(0, 100, 0, 30)
+PSilentButton.Position = UDim2.new(0.55, 0, 0.25, 0)
+PSilentButton.BackgroundColor3 = Color3.fromRGB(100, 100, 170)
+PSilentButton.Text = "PSilent: OFF"
+PSilentButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+PSilentButton.Font = Enum.Font.SourceSans
+PSilentButton.TextSize = 14
+PSilentButton.Parent = MainFrame
+
+local FOVButton = Instance.new("TextButton")
+FOVButton.Size = UDim2.new(0, 100, 0, 30)
+FOVButton.Position = UDim2.new(0.55, 0, 0.37, 0)
+FOVButton.BackgroundColor3 = Color3.fromRGB(170, 170, 0)
+FOVButton.Text = "FOV: ON"
+FOVButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+FOVButton.Font = Enum.Font.SourceSans
+FOVButton.TextSize = 14
+FOVButton.Parent = MainFrame
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(0.9, 0, 0, 20)
+StatusLabel.Position = UDim2.new(0.05, 0, 0.49, 0)
+StatusLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+StatusLabel.Text = "Press X: Silent | Z: Normal"
+StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+StatusLabel.Font = Enum.Font.SourceSans
+StatusLabel.TextSize = 12
+StatusLabel.Parent = MainFrame
+
+local TargetLabel = Instance.new("TextLabel")
+TargetLabel.Size = UDim2.new(0.9, 0, 0, 20)
+TargetLabel.Position = UDim2.new(0.05, 0, 0.56, 0)
+TargetLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+TargetLabel.Text = "Target: None"
+TargetLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TargetLabel.Font = Enum.Font.SourceSans
+TargetLabel.TextSize = 12
+TargetLabel.Parent = MainFrame
+
+local ModeLabel = Instance.new("TextLabel")
+ModeLabel.Size = UDim2.new(0.9, 0, 0, 20)
+ModeLabel.Position = UDim2.new(0.05, 0, 0.63, 0)
+ModeLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+ModeLabel.Text = "Mode: Disabled"
+ModeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+ModeLabel.Font = Enum.Font.SourceSans
+ModeLabel.TextSize = 12
+ModeLabel.Parent = MainFrame
+
+-- ESP Storage
+local playerESP = {}
+local silentAimTarget = nil
+
+-- Check if player is valid
+local function isValidPlayer(player)
+    return player and player ~= localPlayer and player.Character and 
+           player.Character:FindFirstChild("Humanoid") and 
+           player.Character:FindFirstChild("Head") and 
+           player.Character:FindFirstChild("HumanoidRootPart") and
+           player.Character.Humanoid.Health > 0
+end
+
+-- Get closest player for silent aim
+local function getClosestPlayer()
+    if not localPlayer.Character or not localPlayer.Character:FindFirstChild("Head") then 
+        return nil 
+    end
+    
+    local closestPlayer = nil
+    local closestDistance = AIMBOT_FOV
+    
+    local localHead = localPlayer.Character.Head
+    local camera = workspace.CurrentCamera
+    local screenCenter = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
+    
+    for player, data in pairs(playerESP) do
+        if isValidPlayer(player) and data.character and data.character:FindFirstChild("Head") then
+            local head = data.character.Head
+            
+            -- Calculate 3D distance
+            local distance3D = (head.Position - localHead.Position).Magnitude
+            
+            -- Skip if too far
+            if distance3D > AIMBOT_MAX_DISTANCE then continue end
+            
+            -- Calculate screen distance from center
+            local headPos, headVisible = camera:WorldToViewportPoint(head.Position)
+            
+            if headVisible and headPos.Z > 0 then
+                local screenPos = Vector2.new(headPos.X, headPos.Y)
+                local screenDistance = (screenPos - screenCenter).Magnitude
+                
+                -- Only target if within FOV circle
+                if screenDistance < AIMBOT_FOV and screenDistance < closestDistance then
+                    closestPlayer = player
+                    closestDistance = screenDistance
+                end
+            end
+        end
+    end
+    
+    return closestPlayer
+end
+
+-- Create ESP for player
+local function createESP(player)
+    if player == localPlayer then return end
+    
+    local character = player.Character or player.CharacterAdded:Wait()
+    if not character then return end
+    
+    -- Wait for character to fully load
+    local humanoid = character:WaitForChild("Humanoid", 5)
+    local head = character:WaitForChild("Head", 5)
+    local rootPart = character:WaitForChild("HumanoidRootPart", 5)
+    
+    if not humanoid or not head or not rootPart then return end
+    
+    -- Create drawings
+    local box = Drawing.new("Square")
+    box.Visible = false
+    box.Color = BOX_COLOR
+    box.Thickness = 2
+    box.Filled = false
+    
+    local headCircle = Drawing.new("Circle")
+    headCircle.Visible = false
+    headCircle.Color = AIMBOT_COLOR
+    headCircle.Thickness = 3
+    headCircle.Radius = 10
+    headCircle.Filled = false
+    
+    local healthBarBg = Drawing.new("Square")
+    healthBarBg.Visible = false
+    healthBarBg.Color = Color3.fromRGB(0, 0, 0)
+    healthBarBg.Thickness = 1
+    healthBarBg.Filled = true
+    
+    local healthBar = Drawing.new("Square")
+    healthBar.Visible = false
+    healthBar.Color = Color3.fromRGB(0, 255, 0)
+    healthBar.Thickness = 1
+    healthBar.Filled = true
+    
+    local nameLabel = Drawing.new("Text")
+    nameLabel.Visible = false
+    nameLabel.Color = Color3.fromRGB(255, 255, 255)
+    nameLabel.Size = 16
+    nameLabel.Center = true
+    nameLabel.Outline = true
+    nameLabel.Font = 0
+    
+    local silentAimIndicator = Drawing.new("Circle")
+    silentAimIndicator.Visible = false
+    silentAimIndicator.Color = SILENT_AIM_COLOR
+    silentAimIndicator.Thickness = 2
+    silentAimIndicator.Radius = 15
+    silentAimIndicator.Filled = false
+    
+    playerESP[player] = {
+        box = box, 
+        headCircle = headCircle,
+        healthBarBg = healthBarBg,
+        healthBar = healthBar,
+        nameLabel = nameLabel,
+        silentAimIndicator = silentAimIndicator,
+        character = character,
+        lastUpdate = tick()
+    }
+end
+
+local function removeESP(player)
+    if playerESP[player] then
+        local data = playerESP[player]
+        data.box:Remove()
+        data.headCircle:Remove()
+        data.healthBarBg:Remove()
+        data.healthBar:Remove()
+        data.nameLabel:Remove()
+        data.silentAimIndicator:Remove()
+        playerESP[player] = nil
+        
+        if silentAimTarget == player then
+            silentAimTarget = nil
+        end
+    end
+end
+
+local function updateESP()
+    local currentTime = tick()
+    
+    for player, data in pairs(playerESP) do
+        -- Check if character still exists and is valid
+        if not isValidPlayer(player) or not data.character then
+            data.box.Visible = false
+            data.headCircle.Visible = false
+            data.healthBarBg.Visible = false
+            data.healthBar.Visible = false
+            data.nameLabel.Visible = false
+            data.silentAimIndicator.Visible = false
+            
+            -- Remove invalid players after 5 seconds
+            if currentTime - (data.lastUpdate or 0) > 5 then
+                removeESP(player)
+            end
+            continue
+        end
+        
+        data.lastUpdate = currentTime
+        
+        local humanoid = data.character.Humanoid
+        local head = data.character.Head
+        local rootPart = data.character.HumanoidRootPart
+        
+        if humanoid and humanoid.Health > 0 and head and rootPart then
+            local headPos, headVisible = workspace.CurrentCamera:WorldToViewportPoint(head.Position)
+            local rootPos, rootVisible = workspace.CurrentCamera:WorldToViewportPoint(rootPart.Position)
+            
+            if headVisible and rootVisible and headPos.Z > 0 and rootPos.Z > 0 and ESP_ENABLED and menuVisible then
+                -- Calculate full body box dimensions
+                local topPos = workspace.CurrentCamera:WorldToViewportPoint(head.Position + Vector3.new(0, 1.5, 0))
+                local bottomPos = workspace.CurrentCamera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 2.5, 0))
+                
+                local height = math.abs(topPos.Y - bottomPos.Y)
+                local width = height * 0.45
+                
+                -- Ensure minimum size
+                width = math.max(width, 30)
+                height = math.max(height, 50)
+                
+                -- Update main box (full body)
+                data.box.Size = Vector2.new(width, height)
+                data.box.Position = Vector2.new(rootPos.X - width/2, topPos.Y)
+                data.box.Visible = true
+                
+                -- Update head circle (for silent aim targeting)
+                data.headCircle.Position = Vector2.new(headPos.X, headPos.Y)
+                data.headCircle.Visible = (SILENT_AIM_ENABLED or PSILENT_ENABLED) and (player == silentAimTarget)
+                data.headCircle.Color = PSILENT_ENABLED and Color3.fromRGB(255, 0, 255) or SILENT_AIM_COLOR
+                
+                -- Update silent aim indicator
+                data.silentAimIndicator.Position = Vector2.new(headPos.X, headPos.Y)
+                data.silentAimIndicator.Visible = (SILENT_AIM_ENABLED or PSILENT_ENABLED) and (player == silentAimTarget)
+                data.silentAimIndicator.Color = PSILENT_ENABLED and Color3.fromRGB(255, 0, 255) or SILENT_AIM_COLOR
+                
+                -- Update health bar
+                local healthPercent = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                local barWidth = width - 4
+                local barHeight = 6
+                
+                data.healthBarBg.Size = Vector2.new(barWidth + 2, barHeight + 2)
+                data.healthBarBg.Position = Vector2.new(rootPos.X - barWidth/2 - 1, topPos.Y - 12)
+                data.healthBarBg.Visible = true
+                
+                data.healthBar.Size = Vector2.new(barWidth * healthPercent, barHeight)
+                data.healthBar.Position = Vector2.new(rootPos.X - barWidth/2, topPos.Y - 11)
+                data.healthBar.Color = healthPercent > 0.6 and Color3.fromRGB(0, 255, 0) or 
+                                      healthPercent > 0.3 and Color3.fromRGB(255, 255, 0) or 
+                                      Color3.fromRGB(255, 0, 0)
+                data.healthBar.Visible = true
+                
+                -- Update name label
+                data.nameLabel.Text = string.format("%s [%d]", player.Name, math.floor(humanoid.Health))
+                data.nameLabel.Position = Vector2.new(rootPos.X, topPos.Y - 28)
+                data.nameLabel.Visible = true
+            else
+                data.box.Visible = false
+                data.headCircle.Visible = false
+                data.healthBarBg.Visible = false
+                data.healthBar.Visible = false
+                data.nameLabel.Visible = false
+                data.silentAimIndicator.Visible = false
+            end
+        else
+            data.box.Visible = false
+            data.headCircle.Visible = false
+            data.healthBarBg.Visible = false
+            data.healthBar.Visible = false
+            data.nameLabel.Visible = false
+            data.silentAimIndicator.Visible = false
+        end
+    end
+end
+
+-- Silent aim hook (NO camera modification - only bullet redirection)
+local function setupSilentAim()
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
+        local method = getnamecallmethod()
+        local args = {...}
+        local self = args[1]
+        
+        -- Only intercept if silent aim is enabled and not from our own scripts
+        if (SILENT_AIM_ENABLED or PSILENT_ENABLED) and self == workspace and not checkcaller() then
+            silentAimTarget = getClosestPlayer()
+            
+            if silentAimTarget and playerESP[silentAimTarget] and playerESP[silentAimTarget].character:FindFirstChild("Head") then
+                local targetHead = playerESP[silentAimTarget].character.Head
+                local targetPos = targetHead.Position + Vector3.new(0, 0.5, 0)
+                
+                -- Add prediction for moving targets (PSilent)
+                if PSILENT_ENABLED and silentAimTarget.Character:FindFirstChild("HumanoidRootPart") then
+                    local velocity = silentAimTarget.Character.HumanoidRootPart.Velocity
+                    targetPos = targetPos + velocity * 0.1 -- Simple prediction
+                end
+                
+                -- Handle different raycast methods - ONLY redirect bullets, NO camera changes
+                if method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist" or 
+                   method == "FindPartOnRay" or method == "findPartOnRay" then
+                    local ray = args[2]
+                    if ray then
+                        local origin = ray.Origin
+                        local direction = (targetPos - origin).Unit * ray.Direction.Magnitude
+                        args[2] = Ray.new(origin, direction)
+                        return oldNamecall(unpack(args))
+                    end
+                elseif method == "Raycast" then
+                    local origin = args[2]
+                    if origin then
+                        local direction = (targetPos - origin).Unit * (args[3] or Vector3.new(0, -1000, 0)).Magnitude
+                        args[3] = direction
+                        return oldNamecall(unpack(args))
+                    end
+                end
+            end
+        end
+        
+        return oldNamecall(...)
+    end))
+end
+
+-- Update mode label
+local function updateModeLabel()
+    if PSILENT_ENABLED then
+        ModeLabel.Text = "Mode: PSilent (Natural Cam)"
+    elseif SILENT_AIM_ENABLED then
+        ModeLabel.Text = "Mode: Silent Aim (Natural Cam)"
+    else
+        ModeLabel.Text = "Mode: Disabled"
+    end
+end
+
+-- Button event handlers (REMOVED normal aimbot - only silent aim now)
+ESPButton.MouseButton1Click:Connect(function()
+    ESP_ENABLED = not ESP_ENABLED
+    ESPButton.Text = ESP_ENABLED and "ESP: ON" or "ESP: OFF"
+    ESPButton.BackgroundColor3 = ESP_ENABLED and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0)
+    
+    if not ESP_ENABLED then
+        for _, data in pairs(playerESP) do
+            data.box.Visible = false
+            data.headCircle.Visible = false
+            data.healthBarBg.Visible = false
+            data.healthBar.Visible = false
+            data.nameLabel.Visible = false
+            data.silentAimIndicator.Visible = false
+        end
+    end
+end)
+
+SilentAimButton.MouseButton1Click:Connect(function()
+    SILENT_AIM_ENABLED = not SILENT_AIM_ENABLED
+    
+    if SILENT_AIM_ENABLED then
+        PSILENT_ENABLED = false
+        PSilentButton.Text = "PSilent: OFF"
+        PSilentButton.BackgroundColor3 = Color3.fromRGB(100, 100, 170)
+    end
+    
+    SilentAimButton.Text = SILENT_AIM_ENABLED and "Silent: ON" or "Silent: OFF"
+    SilentAimButton.BackgroundColor3 = SILENT_AIM_ENABLED and Color3.fromRGB(255, 165, 0) or Color3.fromRGB(170, 100, 0)
+    
+    updateModeLabel()
+    updateFOVCircle()
+end)
+
+PSilentButton.MouseButton1Click:Connect(function()
+    PSILENT_ENABLED = not PSILENT_ENABLED
+    
+    if PSILENT_ENABLED then
+        SILENT_AIM_ENABLED = false
+        SilentAimButton.Text = "Silent: OFF"
+        SilentAimButton.BackgroundColor3 = Color3.fromRGB(170, 100, 0)
+    end
+    
+    PSilentButton.Text = PSILENT_ENABLED and "PSilent: ON" or "PSilent: OFF"
+    PSilentButton.BackgroundColor3 = PSILENT_ENABLED and Color3.fromRGB(255, 0, 255) or Color3.fromRGB(100, 100, 170)
+    
+    updateModeLabel()
+    updateFOVCircle()
+end)
+
+FOVButton.MouseButton1Click:Connect(function()
+    SHOW_FOV_CIRCLE = not SHOW_FOV_CIRCLE
+    FOVButton.Text = SHOW_FOV_CIRCLE and "FOV: ON" or "FOV: OFF"
+    FOVButton.BackgroundColor3 = SHOW_FOV_CIRCLE and Color3.fromRGB(170, 170, 0) or Color3.fromRGB(100, 100, 100)
+    updateFOVCircle()
+end)
+
+-- Keybinds (REMOVED normal aimbot - only silent aim now)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        -- Toggle menu visibility
+        menuVisible = not menuVisible
+        MainFrame.Visible = menuVisible
+        if fovCircle then
+            fovCircle.Visible = SHOW_FOV_CIRCLE and (SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
+            fovCircleCenter.Visible = SHOW_FOV_CIRCLE and (SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
+        end
+        
+    elseif input.KeyCode == Enum.KeyCode.X then
+        -- Cycle through silent aim modes
+        if not SILENT_AIM_ENABLED and not PSILENT_ENABLED then
+            SILENT_AIM_ENABLED = true
+            SilentAimButton.Text = "Silent: ON"
+            SilentAimButton.BackgroundColor3 = Color3.fromRGB(255, 165, 0)
+            PSilentButton.Text = "PSilent: OFF"
+            PSilentButton.BackgroundColor3 = Color3.fromRGB(100, 100, 170)
+        elseif SILENT_AIM_ENABLED then
+            SILENT_AIM_ENABLED = false
+            PSILENT_ENABLED = true
+            SilentAimButton.Text = "Silent: OFF"
+            SilentAimButton.BackgroundColor3 = Color3.fromRGB(170, 100, 0)
+            PSilentButton.Text = "PSilent: ON"
+            PSilentButton.BackgroundColor3 = Color3.fromRGB(255, 0, 255)
+        else
+            PSILENT_ENABLED = false
+            SilentAimButton.Text = "Silent: OFF"
+            SilentAimButton.BackgroundColor3 = Color3.fromRGB(170, 100, 0)
+            PSilentButton.Text = "PSilent: OFF"
+            PSilentButton.BackgroundColor3 = Color3.fromRGB(100, 100, 170)
+        end
+        
+        updateModeLabel()
+        updateFOVCircle()
+    end
+end)
+
+-- Character respawn handling
+local function onCharacterAdded(player, character)
+    if player == localPlayer then return end
+    
+    wait(0.5)
+    
+    if playerESP[player] then
+        removeESP(player)
+    end
+    
+    createESP(player)
+end
+
+local function onPlayerAdded(player)
+    if player == localPlayer then return end
+    
+    player.CharacterAdded:Connect(function(character)
+        onCharacterAdded(player, character)
+    end)
+    
+    if player.Character then
+        onCharacterAdded(player, player.Character)
+    end
+end
+
+-- Initialize
+createFOVCircle() -- Create FOV circle first
+setupSilentAim() -- Setup silent aim hooks
+
+for _, player in pairs(Players:GetPlayers()) do
+    onPlayerAdded(player)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(function(player)
+    removeESP(player)
+end)
+
+-- Main loop - NO camera manipulation, only ESP and silent aim
+RunService.RenderStepped:Connect(function()
+    -- Update FOV circle
+    updateFOVCircle()
+    
+    -- Update ESP
+    if ESP_ENABLED then
+        updateESP()
+    end
+    
+    -- Handle silent aim modes only - NO camera changes
+    if SILENT_AIM_ENABLED or PSILENT_ENABLED then
+        silentAimTarget = getClosestPlayer()
+        TargetLabel.Text = silentAimTarget and ("Silent: " .. silentAimTarget.Name) or "Silent: None"
+    end
+end)
+
+print("Fixed ESP + pSilent (Natural Camera) + Right Shift Menu Script Loaded!")
+print("Controls:")
+print("Right Shift - Toggle menu")
+print("X - Cycle through silent aim modes")
+print("Features:")
+print("- True pSilent (server-side lock, NO camera changes)")
+print("- Natural camera movement preserved")
+print("- Working silent aim with ray method hooks")
+print("- Toggleable menu with Right Shift")
