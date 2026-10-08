@@ -1,408 +1,513 @@
--- Working ESP + Mouse-Based Silent Aim + Right Shift Menu
+-- VISUAL CLIENT | LocalScript
+-- Cosmetic and visual modules only.
+-- Default menu key: RightShift (rebind it from the menu)
+
 local Players = game:GetService("Players")
+local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
-local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
 
--- Configuration
-local ESP_ENABLED = true
-local SILENT_AIM_ENABLED = false
-local PSILENT_ENABLED = false
-local SHOW_FOV_CIRCLE = true
-local BOX_COLOR = Color3.fromRGB(255, 0, 0)
-local SILENT_AIM_COLOR = Color3.fromRGB(255, 165, 0)
-local FOV_CIRCLE_COLOR = Color3.fromRGB(255, 255, 255)
-local AIMBOT_FOV = 150
-local AIMBOT_MAX_DISTANCE = 200
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
 
-local localPlayer = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
-local mouse = localPlayer:GetMouse()
-local menuVisible = true
-
--- Silent aim variables
-local silentAimTarget = nil
-local targetPosition = nil
-local isAiming = false
-
--- Drawing objects
-local fovCircle = Drawing.new("Circle")
-local fovCircleCenter = Drawing.new("Circle")
-local playerDrawings = {}
-
--- Setup FOV circle
-fovCircle.Visible = false
-fovCircle.Color = FOV_CIRCLE_COLOR
-fovCircle.Thickness = 2
-fovCircle.Radius = AIMBOT_FOV
-fovCircle.Filled = false
-fovCircle.NumSides = 32
-fovCircle.Transparency = 0.7
-
-fovCircleCenter.Visible = false
-fovCircleCenter.Color = FOV_CIRCLE_COLOR
-fovCircleCenter.Thickness = 1
-fovCircleCenter.Radius = 2
-fovCircleCenter.Filled = true
-fovCircleCenter.Transparency = 0.8
-
--- UI Setup
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "ESPGui"
-ScreenGui.Parent = CoreGui
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 220, 0, 200)
-MainFrame.Position = UDim2.new(0, 10, 0, 10)
-MainFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-MainFrame.BorderSizePixel = 0
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
-
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 25)
-Title.Position = UDim2.new(0, 0, 0, 0)
-Title.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-Title.Text = "ESP + Silent Aim [Right Shift]"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.Font = Enum.Font.SourceSans
-Title.TextSize = 14
-Title.Parent = MainFrame
-
-local ESPButton = Instance.new("TextButton")
-ESPButton.Size = UDim2.new(0, 90, 0, 25)
-ESPButton.Position = UDim2.new(0.05, 0, 0.15, 0)
-ESPButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
-ESPButton.Text = "ESP: ON"
-ESPButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-ESPButton.Font = Enum.Font.SourceSans
-ESPButton.TextSize = 12
-ESPButton.Parent = MainFrame
-
-local SilentButton = Instance.new("TextButton")
-SilentButton.Size = UDim2.new(0, 90, 0, 25)
-SilentButton.Position = UDim2.new(0.55, 0, 0.15, 0)
-SilentButton.BackgroundColor3 = Color3.fromRGB(170, 100, 0)
-SilentButton.Text = "Silent: OFF"
-SilentButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-SilentButton.Font = Enum.Font.SourceSans
-SilentButton.TextSize = 12
-SilentButton.Parent = MainFrame
-
-local TargetLabel = Instance.new("TextLabel")
-TargetLabel.Size = UDim2.new(0.9, 0, 0, 20)
-TargetLabel.Position = UDim2.new(0.05, 0, 0.45, 0)
-TargetLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-TargetLabel.Text = "Target: None"
-TargetLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-TargetLabel.Font = Enum.Font.SourceSans
-TargetLabel.TextSize = 11
-TargetLabel.Parent = MainFrame
-
--- Player validation
-local function isValidPlayer(player)
-    return player and player ~= localPlayer and player.Character and 
-           player.Character:FindFirstChild("Humanoid") and 
-           player.Character:FindFirstChild("Head") and 
-           player.Character.Humanoid.Health > 0
-end
-
--- Get closest player
-local function getClosestPlayer()
-    local closestPlayer = nil
-    local closestDistance = AIMBOT_FOV
-    
-    local camera = workspace.CurrentCamera
-    local screenCenter = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if isValidPlayer(player) then
-            local head = player.Character.Head
-            local headPos, headVisible = camera:WorldToViewportPoint(head.Position)
-            
-            if headVisible and headPos.Z > 0 then
-                local screenPos = Vector2.new(headPos.X, headPos.Y)
-                local screenDistance = (screenPos - screenCenter).Magnitude
-                
-                local distance3D = (head.Position - camera.CFrame.Position).Magnitude
-                if distance3D < AIMBOT_MAX_DISTANCE and screenDistance < closestDistance then
-                    closestPlayer = player
-                    closestDistance = screenDistance
-                end
-            end
-        end
-    end
-    
-    return closestPlayer
-end
-
--- Create player ESP
-local function createPlayerESP(player)
-    local drawings = {
-        box = Drawing.new("Square"),
-        headCircle = Drawing.new("Circle"),
-        healthBarBg = Drawing.new("Square"),
-        healthBar = Drawing.new("Square"),
-        nameLabel = Drawing.new("Text")
-    }
-    
-    -- Configure drawings
-    for _, drawing in pairs(drawings) do
-        drawing.Visible = false
-    end
-    
-    drawings.box.Color = BOX_COLOR
-    drawings.box.Thickness = 2
-    
-    drawings.headCircle.Color = Color3.fromRGB(0, 255, 0)
-    drawings.headCircle.Thickness = 2
-    drawings.headCircle.Radius = 8
-    
-    drawings.healthBarBg.Color = Color3.fromRGB(0, 0, 0)
-    drawings.healthBarBg.Filled = true
-    
-    drawings.healthBar.Color = Color3.fromRGB(0, 255, 0)
-    drawings.healthBar.Filled = true
-    
-    drawings.nameLabel.Color = Color3.fromRGB(255, 255, 255)
-    drawings.nameLabel.Size = 16
-    drawings.nameLabel.Center = true
-    drawings.nameLabel.Outline = true
-    
-    playerDrawings[player] = drawings
-end
-
--- Update player ESP
-local function updateESP()
-    for _, player in pairs(Players:GetPlayers()) do
-        if player == localPlayer then continue end
-        
-        local drawings = playerDrawings[player]
-        if not drawings then
-            createPlayerESP(player)
-            drawings = playerDrawings[player]
-        end
-        
-        if isValidPlayer(player) and ESP_ENABLED and menuVisible then
-            local character = player.Character
-            local humanoid = character.Humanoid
-            local head = character.Head
-            local rootPart = character.HumanoidRootPart
-            
-            local headPos, headVisible = Camera:WorldToViewportPoint(head.Position)
-            local rootPos, rootVisible = Camera:WorldToViewportPoint(rootPart.Position)
-            
-            if headVisible and rootVisible and headPos.Z > 0 and rootPos.Z > 0 then
-                -- Calculate box dimensions
-                local topPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 1, 0))
-                local bottomPos = Camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 2, 0))
-                
-                local height = math.abs(topPos.Y - bottomPos.Y)
-                local width = height * 0.45
-                
-                width = math.max(width, 25)
-                height = math.max(height, 40)
-                
-                -- Update box
-                drawings.box.Size = Vector2.new(width, height)
-                drawings.box.Position = Vector2.new(rootPos.X - width/2, topPos.Y)
-                drawings.box.Visible = true
-                
-                -- Update head circle (shows silent aim target)
-                drawings.headCircle.Position = Vector2.new(headPos.X, headPos.Y)
-                drawings.headCircle.Visible = (SILENT_AIM_ENABLED or PSILENT_ENABLED) and player == silentAimTarget
-                drawings.headCircle.Color = PSILENT_ENABLED and Color3.fromRGB(255, 0, 255) or SILENT_AIM_COLOR
-                
-                -- Update health bar
-                local healthPercent = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
-                local barWidth = width - 4
-                local barHeight = 4
-                
-                drawings.healthBarBg.Size = Vector2.new(barWidth + 2, barHeight + 2)
-                drawings.healthBarBg.Position = Vector2.new(rootPos.X - barWidth/2 - 1, topPos.Y - 8)
-                drawings.healthBarBg.Visible = true
-                
-                drawings.healthBar.Size = Vector2.new(barWidth * healthPercent, barHeight)
-                drawings.healthBar.Position = Vector2.new(rootPos.X - barWidth/2, topPos.Y - 7)
-                drawings.healthBar.Color = healthPercent > 0.6 and Color3.fromRGB(0, 255, 0) or 
-                                          healthPercent > 0.3 and Color3.fromRGB(255, 255, 0) or 
-                                          Color3.fromRGB(255, 0, 0)
-                drawings.healthBar.Visible = true
-                
-                -- Update name label
-                drawings.nameLabel.Text = player.Name
-                drawings.nameLabel.Position = Vector2.new(rootPos.X, topPos.Y - 20)
-                drawings.nameLabel.Visible = true
-            else
-                -- Hide all drawings
-                for _, drawing in pairs(drawings) do
-                    drawing.Visible = false
-                end
-            end
-        else
-            -- Hide all drawings
-            for _, drawing in pairs(drawings) do
-                drawing.Visible = false
-            end
+-- Remove old copies if the script is run more than once
+do
+    local pg = player:WaitForChild("PlayerGui")
+    local oldGui = pg:FindFirstChild("VisualClient")
+    if oldGui then oldGui:Destroy() end
+    for _, e in ipairs(Lighting:GetChildren()) do
+        if e.Name == "VisualClientColor" or e.Name == "VisualClientBlur" then
+            e:Destroy()
         end
     end
 end
 
--- Mouse-based silent aim that actually redirects shots
-local function applySilentAim()
-    if not SILENT_AIM_ENABLED and not PSILENT_ENABLED then
-        TargetLabel.Text = "Target: None"
+local oldFOV = camera.FieldOfView
+local oldLighting = {
+    Brightness = Lighting.Brightness,
+    ClockTime = Lighting.ClockTime,
+    Ambient = Lighting.Ambient,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+    GlobalShadows = Lighting.GlobalShadows,
+    FogStart = Lighting.FogStart,
+    FogEnd = Lighting.FogEnd,
+}
+
+local enabled = {}
+local connections = {}
+local cosmetics = {}
+local trailObjects = {}
+local originalEffects = {}
+local resetFns = {} -- functions run on unload to switch modules off
+
+-- GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "VisualClient"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local main = Instance.new("Frame")
+main.Size = UDim2.fromOffset(280, 470)
+main.Position = UDim2.new(0, 35, 0.3, 0)
+main.BackgroundColor3 = Color3.fromRGB(24, 27, 35)
+main.BorderSizePixel = 0
+main.Parent = gui
+
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+
+local stroke = Instance.new("UIStroke", main)
+stroke.Color = Color3.fromRGB(70, 155, 255)
+stroke.Thickness = 1.3
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -20, 0, 42)
+title.Position = UDim2.fromOffset(12, 0)
+title.BackgroundTransparency = 1
+title.Text = "  VISUAL CLIENT"
+title.TextColor3 = Color3.fromRGB(100, 185, 255)
+title.TextSize = 19
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = main
+
+-- Drag window
+local dragging, dragStart, startPosition
+
+table.insert(connections, title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPosition = main.Position
+    end
+end))
+
+table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end))
+
+table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end))
+
+local list = Instance.new("ScrollingFrame")
+list.Position = UDim2.fromOffset(10, 48)
+list.Size = UDim2.new(1, -20, 1, -58)
+list.BackgroundTransparency = 1
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 4
+list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+list.CanvasSize = UDim2.new()
+list.Parent = main
+
+local layout = Instance.new("UIListLayout", list)
+layout.Padding = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local order = 0
+local function button(label, callback)
+    order += 1
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -6, 0, 36)
+    b.BackgroundColor3 = Color3.fromRGB(39, 44, 55)
+    b.BorderSizePixel = 0
+    b.TextColor3 = Color3.fromRGB(230, 235, 245)
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 13
+    b.Text = label
+    b.LayoutOrder = order
+    b.Parent = list
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    b.MouseButton1Click:Connect(callback)
+    return b
+end
+
+local function module(name, callback)
+    enabled[name] = false
+    local b
+    b = button("[ OFF ]  " .. name, function()
+        enabled[name] = not enabled[name]
+        b.Text = (enabled[name] and "[ ON ]   " or "[ OFF ]  ") .. name
+        b.BackgroundColor3 = enabled[name]
+            and Color3.fromRGB(35, 100, 155)
+            or Color3.fromRGB(39, 44, 55)
+        callback(enabled[name])
+    end)
+    table.insert(resetFns, function()
+        if enabled[name] then
+            enabled[name] = false
+            callback(false)
+        end
+    end)
+    return b
+end
+
+-- Menu toggle key (rebindable)
+local menuKey = Enum.KeyCode.RightShift
+local binding = false
+local keyButton
+
+local function updateKeyButton()
+    if not keyButton then return end
+    if binding then
+        keyButton.Text = "Menu Key:  press a key... (Esc cancels)"
+    else
+        keyButton.Text = "Menu Key:  " .. menuKey.Name .. "  (click to rebind)"
+    end
+end
+
+keyButton = button("", function()
+    binding = true
+    updateKeyButton()
+end)
+updateKeyButton()
+
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
+    if binding then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            if input.KeyCode ~= Enum.KeyCode.Escape then
+                menuKey = input.KeyCode
+            end
+            binding = false
+            updateKeyButton()
+        end
         return
     end
-    
-    silentAimTarget = getClosestPlayer()
-    
-    if silentAimTarget and silentAimTarget.Character and silentAimTarget.Character:FindFirstChild("Head") then
-        local targetHead = silentAimTarget.Character.Head
-        targetPosition = targetHead.Position + Vector3.new(0, 0.5, 0)
-        
-        -- Add prediction for PSilent
-        if PSILENT_ENABLED and silentAimTarget.Character:FindFirstChild("HumanoidRootPart") then
-            local velocity = silentAimTarget.Character.HumanoidRootPart.Velocity
-            targetPosition = targetPosition + velocity * 0.1
+
+    if processed then return end
+    if input.KeyCode == menuKey then
+        main.Visible = not main.Visible
+    end
+end))
+
+-- China hat: glowing cone built from adornments (no physics, no shadows).
+local hatPresets = {
+    {name = "Cyan",   color = Color3.fromRGB(0, 220, 255)},
+    {name = "Purple", color = Color3.fromRGB(170, 70, 255)},
+    {name = "Pink",   color = Color3.fromRGB(255, 70, 170)},
+    {name = "Green",  color = Color3.fromRGB(70, 255, 140)},
+    {name = "Gold",   color = Color3.fromRGB(255, 200, 70)},
+}
+local hatIndex = 1
+local hatCones = {}   -- {adornment, ...}
+local hatLight
+
+local function applyHatColor()
+    local c = hatPresets[hatIndex].color
+    for _, cone in ipairs(hatCones) do
+        cone.Color3 = c
+    end
+    if hatLight then hatLight.Color = c end
+end
+
+local function removeHat()
+    for _, obj in ipairs(cosmetics) do
+        if obj and obj.Parent then obj:Destroy() end
+    end
+    table.clear(cosmetics)
+    table.clear(hatCones)
+    hatLight = nil
+end
+
+local function addHat(character)
+    removeHat()
+    local head = character:FindFirstChild("Head")
+    if not head then return end
+
+    -- cone tip points up: rotate +90 degrees about X
+    local function cone(radius, height, transparency, yOffset)
+        local c = Instance.new("ConeHandleAdornment")
+        c.Name = "LocalChinaHat"
+        c.Adornee = head
+        c.Radius = radius
+        c.Height = height
+        c.Transparency = transparency
+        c.CFrame = CFrame.new(0, yOffset, 0) * CFrame.Angles(math.rad(90), 0, 0)
+        c.ZIndex = 1
+        c.AlwaysOnTop = false
+        c.Parent = head
+        table.insert(cosmetics, c)
+        table.insert(hatCones, c)
+    end
+
+    cone(1.35, 1.15, 0.05, 0.45)   -- solid core
+    cone(1.55, 1.35, 0.65, 0.40)   -- soft outer glow layer
+
+    hatLight = Instance.new("PointLight")
+    hatLight.Name = "LocalChinaHatLight"
+    hatLight.Brightness = 1.5
+    hatLight.Range = 10
+    hatLight.Shadows = false
+    hatLight.Parent = head
+    table.insert(cosmetics, hatLight)
+
+    applyHatColor()
+end
+
+module("China Hat", function(on)
+    if on then
+        if player.Character then addHat(player.Character) end
+    else
+        removeHat()
+    end
+end)
+
+local hatColorButton
+hatColorButton = button("Hat Color:  Cyan", function()
+    hatIndex = hatIndex % #hatPresets + 1
+    hatColorButton.Text = "Hat Color:  " .. hatPresets[hatIndex].name
+    applyHatColor()
+end)
+
+-- Trail cosmetics
+local function removeTrail()
+    for _, obj in ipairs(trailObjects) do
+        if obj and obj.Parent then obj:Destroy() end
+    end
+    table.clear(trailObjects)
+end
+
+local function addTrail(character)
+    removeTrail()
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local a0 = Instance.new("Attachment")
+    a0.Position = Vector3.new(-0.65, 0, 0)
+    a0.Parent = root
+
+    local a1 = Instance.new("Attachment")
+    a1.Position = Vector3.new(0.65, 0, 0)
+    a1.Parent = root
+
+    local trail = Instance.new("Trail")
+    trail.Attachment0 = a0
+    trail.Attachment1 = a1
+    trail.Lifetime = 0.65
+    trail.MinLength = 0.1
+    trail.FaceCamera = true
+    trail.LightEmission = 0.8
+    trail.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 200, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(170, 60, 255))
+    })
+    trail.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.15),
+        NumberSequenceKeypoint.new(1, 1)
+    })
+    trail.Parent = root
+
+    table.insert(trailObjects, a0)
+    table.insert(trailObjects, a1)
+    table.insert(trailObjects, trail)
+end
+
+module("Player Trails", function(on)
+    if on then
+        if player.Character then addTrail(player.Character) end
+    else
+        removeTrail()
+    end
+end)
+
+-- FOV controls
+local fov = camera.FieldOfView
+button("FOV  -", function()
+    fov = math.max(40, fov - 5)
+    camera.FieldOfView = fov
+end)
+
+button("FOV  +", function()
+    fov = math.min(120, fov + 5)
+    camera.FieldOfView = fov
+end)
+
+button("Reset FOV", function()
+    fov = oldFOV
+    camera.FieldOfView = oldFOV
+end)
+
+-- Sky presets using time of day
+local skyIndex = 1
+local skyPresets = {
+    {name = "Default Day", time = 14},
+    {name = "Sunset", time = 18},
+    {name = "Night", time = 0},
+}
+
+button("Next Sky Preset", function()
+    skyIndex = skyIndex % #skyPresets + 1
+    Lighting.ClockTime = skyPresets[skyIndex].time
+end)
+
+-- Fullbright
+module("Fullbright", function(on)
+    if on then
+        Lighting.Brightness = 3
+        Lighting.Ambient = Color3.fromRGB(180, 180, 180)
+        Lighting.OutdoorAmbient = Color3.fromRGB(180, 180, 180)
+    else
+        Lighting.Brightness = oldLighting.Brightness
+        Lighting.Ambient = oldLighting.Ambient
+        Lighting.OutdoorAmbient = oldLighting.OutdoorAmbient
+    end
+end)
+
+-- Fog removal (handles both classic fog and Atmosphere objects)
+local savedAtmos = {}
+local fogConn
+
+local function clearFog()
+    Lighting.FogStart = 1e6
+    Lighting.FogEnd = 1e6
+    for _, obj in ipairs(Lighting:GetDescendants()) do
+        if obj:IsA("Atmosphere") then
+            if not savedAtmos[obj] then
+                savedAtmos[obj] = {Density = obj.Density, Haze = obj.Haze}
+            end
+            obj.Density = 0
+            obj.Haze = 0
         end
-        
-        TargetLabel.Text = "Target: " .. silentAimTarget.Name
-        
-        -- Calculate where to aim to hit the target
-        local cameraPos = Camera.CFrame.Position
-        local targetDirection = (targetPosition - cameraPos).Unit
-        
-        -- Get current mouse position and calculate adjustment
-        local mousePos = Vector2.new(mouse.X, mouse.Y)
-        local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
-        
-        -- Calculate target screen position
-        local targetScreenPos, targetVisible = Camera:WorldToViewportPoint(targetPosition)
-        
-        if targetVisible and targetScreenPos.Z > 0 then
-            -- Calculate the offset needed to aim at target
-            local targetScreen = Vector2.new(targetScreenPos.X, targetScreenPos.Y)
-            local offset = targetScreen - screenCenter
-            
-            -- Only apply if target is within reasonable range
-            if offset.Magnitude < AIMBOT_FOV * 2 then
-                -- Apply subtle mouse movement to aim at target
-                local sensitivity = 0.3 -- Subtle adjustment
-                local adjustedX = mousePos.X + offset.X * sensitivity
-                local adjustedY = mousePos.Y + offset.Y * sensitivity
-                
-                -- Keep mouse within screen bounds
-                adjustedX = math.clamp(adjustedX, 0, Camera.ViewportSize.X)
-                adjustedY = math.clamp(adjustedY, 0, Camera.ViewportSize.Y)
-                
-                -- Move mouse cursor to aim at target (this affects where you shoot)
-                mousemoverel(offset.X * sensitivity * 0.1, offset.Y * sensitivity * 0.1)
+    end
+end
+
+module("Remove Fog", function(on)
+    if fogConn then
+        fogConn:Disconnect()
+        fogConn = nil
+    end
+
+    if on then
+        clearFog()
+        -- some games keep resetting fog, so re-apply periodically
+        local last = 0
+        fogConn = RunService.Heartbeat:Connect(function()
+            local now = os.clock()
+            if now - last < 0.5 then return end
+            last = now
+            clearFog()
+        end)
+    else
+        Lighting.FogStart = oldLighting.FogStart
+        Lighting.FogEnd = oldLighting.FogEnd
+        for obj, vals in pairs(savedAtmos) do
+            if obj and obj.Parent then
+                obj.Density = vals.Density
+                obj.Haze = vals.Haze
+            end
+        end
+        table.clear(savedAtmos)
+    end
+end)
+
+-- FPS-friendly effects toggle
+module("FPS Boost", function(on)
+    if on then
+        table.clear(originalEffects)
+        for _, obj in ipairs(Lighting:GetDescendants()) do
+            if obj:IsA("PostEffect") then
+                originalEffects[obj] = obj.Enabled
+                obj.Enabled = false
             end
         end
     else
-        TargetLabel.Text = "Target: None"
-        targetPosition = nil
-    end
-end
-
--- Button handlers
-ESPButton.MouseButton1Click:Connect(function()
-    ESP_ENABLED = not ESP_ENABLED
-    ESPButton.Text = ESP_ENABLED and "ESP: ON" or "ESP: OFF"
-    ESPButton.BackgroundColor3 = ESP_ENABLED and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0)
-end)
-
-SilentButton.MouseButton1Click:Connect(function()
-    if not PSILENT_ENABLED then
-        SILENT_AIM_ENABLED = not SILENT_AIM_ENABLED
-        SilentButton.Text = SILENT_AIM_ENABLED and "Silent: ON" or "Silent: OFF"
-        SilentButton.BackgroundColor3 = SILENT_AIM_ENABLED and Color3.fromRGB(255, 165, 0) or Color3.fromRGB(170, 100, 0)
-    else
-        PSILENT_ENABLED = false
-        SilentButton.Text = "Silent: OFF"
-        SilentButton.BackgroundColor3 = Color3.fromRGB(170, 100, 0)
-    end
-end)
-
--- Keybinds
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    
-    if input.KeyCode == Enum.KeyCode.RightShift then
-        menuVisible = not menuVisible
-        MainFrame.Visible = menuVisible
-        fovCircle.Visible = SHOW_FOV_CIRCLE and (SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
-        fovCircleCenter.Visible = SHOW_FOV_CIRCLE and (SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
-        
-    elseif input.KeyCode == Enum.KeyCode.X then
-        if not SILENT_AIM_ENABLED then
-            PSILENT_ENABLED = not PSILENT_ENABLED
-            SilentButton.Text = PSILENT_ENABLED and "PSilent: ON" or "Silent: OFF"
-            SilentButton.BackgroundColor3 = PSILENT_ENABLED and Color3.fromRGB(255, 0, 255) or Color3.fromRGB(170, 100, 0)
-        else
-            PSILENT_ENABLED = true
-            SILENT_AIM_ENABLED = false
-            SilentButton.Text = "PSilent: ON"
-            SilentButton.BackgroundColor3 = Color3.fromRGB(255, 0, 255)
+        for obj, wasEnabled in pairs(originalEffects) do
+            if obj and obj.Parent then
+                obj.Enabled = wasEnabled
+            end
         end
+        table.clear(originalEffects)
     end
 end)
 
--- Player management
-local function onPlayerAdded(player)
-    if player == localPlayer then return end
-    createPlayerESP(player)
-end
+-- Color correction
+local correction = Instance.new("ColorCorrectionEffect")
+correction.Name = "VisualClientColor"
+correction.Enabled = false
+correction.Saturation = 0.15
+correction.Contrast = 0.05
+correction.Parent = Lighting
 
-local function onPlayerRemoving(player)
-    if playerDrawings[player] then
-        for _, drawing in pairs(playerDrawings[player]) do
-            drawing:Remove()
-        end
-        playerDrawings[player] = nil
-    end
-end
-
--- Setup
-for _, player in pairs(Players:GetPlayers()) do
-    onPlayerAdded(player)
-end
-
-Players.PlayerAdded:Connect(onPlayerAdded)
-Players.PlayerRemoving:Connect(onPlayerRemoving)
-
--- Main loop
-RunService.RenderStepped:Connect(function()
-    -- Update FOV circle
-    local camera = workspace.CurrentCamera
-    local screenCenter = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
-    fovCircle.Position = screenCenter
-    fovCircle.Radius = AIMBOT_FOV
-    fovCircle.Visible = SHOW_FOV_CIRCLE and (SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
-    fovCircleCenter.Position = screenCenter
-    fovCircleCenter.Visible = SHOW_FOV_CIRCLE and (SILENT_AIM_ENABLED or PSILENT_ENABLED) and menuVisible
-    
-    -- Update colors based on mode
-    if PSILENT_ENABLED then
-        fovCircle.Color = Color3.fromRGB(255, 0, 255)
-    elseif SILENT_AIM_ENABLED then
-        fovCircle.Color = SILENT_AIM_COLOR
-    else
-        fovCircle.Color = FOV_CIRCLE_COLOR
-    end
-    
-    -- Update ESP
-    updateESP()
-    
-    -- Apply silent aim through mouse movement
-    applySilentAim()
+module("Color Effects", function(on)
+    correction.Enabled = on
 end)
 
-print("Working ESP + Mouse-Based Silent Aim + Right Shift Menu Loaded!")
-print("Right Shift - Toggle Menu")
-print("X - Toggle PSilent")
-print("Silent aim now works through subtle mouse movement redirection")
+-- Blur toggle (not true motion blur)
+local blur = Instance.new("BlurEffect")
+blur.Name = "VisualClientBlur"
+blur.Size = 8
+blur.Enabled = false
+blur.Parent = Lighting
+
+module("Blur Effect", function(on)
+    blur.Enabled = on
+end)
+
+-- Crosshair (parented to the ScreenGui, so it stays visible when the menu is hidden)
+local cross = Instance.new("TextLabel")
+cross.Name = "VisualCrosshair"
+cross.Size = UDim2.fromOffset(30, 30)
+cross.Position = UDim2.new(0.5, -15, 0.5, -15)
+cross.BackgroundTransparency = 1
+cross.Text = "+"
+cross.TextColor3 = Color3.fromRGB(80, 255, 170)
+cross.TextSize = 24
+cross.Font = Enum.Font.GothamBold
+cross.Visible = false
+cross.Parent = gui
+
+module("Custom Crosshair", function(on)
+    cross.Visible = on
+end)
+
+-- Keep cosmetics after respawn
+table.insert(connections, player.CharacterAdded:Connect(function(character)
+    character:WaitForChild("Head")
+    character:WaitForChild("HumanoidRootPart")
+    if enabled["China Hat"] then addHat(character) end
+    if enabled["Player Trails"] then addTrail(character) end
+end))
+
+-- Restore everything and remove the client
+local function cleanup()
+    for _, fn in ipairs(resetFns) do
+        pcall(fn)
+    end
+    if fogConn then fogConn:Disconnect() fogConn = nil end
+    for _, c in ipairs(connections) do
+        c:Disconnect()
+    end
+    table.clear(connections)
+
+    removeHat()
+    removeTrail()
+    camera.FieldOfView = oldFOV
+    Lighting.Brightness = oldLighting.Brightness
+    Lighting.ClockTime = oldLighting.ClockTime
+    Lighting.Ambient = oldLighting.Ambient
+    Lighting.OutdoorAmbient = oldLighting.OutdoorAmbient
+    Lighting.GlobalShadows = oldLighting.GlobalShadows
+    Lighting.FogStart = oldLighting.FogStart
+    Lighting.FogEnd = oldLighting.FogEnd
+    correction:Destroy()
+    blur:Destroy()
+    gui:Destroy()
+end
+
+button("Unload Client", cleanup)
+
+print("Visual Client loaded. Press " .. menuKey.Name .. " to hide/show the menu.")
