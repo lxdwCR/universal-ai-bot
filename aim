@@ -13,6 +13,10 @@ local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local HttpService = game:GetService("HttpService")
+local Stats = game:GetService("Stats")
 
 local player = Players.LocalPlayer
 local function cam() return workspace.CurrentCamera end
@@ -22,8 +26,10 @@ do
     local pg = player:WaitForChild("PlayerGui")
     local old = pg:FindFirstChild("VisualClient")
     if old then old:Destroy() end
+    local oldFx = pg:FindFirstChild("VisualClientFX")
+    if oldFx then oldFx:Destroy() end
     for _, e in ipairs(Lighting:GetChildren()) do
-        if e.Name == "VisualClientColor" or e.Name == "VisualClientBlur" then
+        if string.find(e.Name, "^VisualClient") then
             e:Destroy()
         end
     end
@@ -73,6 +79,35 @@ end
 
 local function getTorso(character)
     return character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+end
+
+------------------------------------------------------------------
+-- Config plumbing (saving needs an executor with file functions)
+------------------------------------------------------------------
+local canFile = type(writefile) == "function"
+    and type(readfile) == "function"
+    and type(isfile) == "function"
+local canFolder = canFile
+    and type(makefolder) == "function"
+    and type(isfolder) == "function"
+
+local configEntries = {}
+local panelRegistry = {}
+local configLoading = false
+local saveConfig -- assigned in the config section near the end
+local saveQueued = false
+
+local function registerConfig(key, get, set)
+    configEntries[key] = {get = get, set = set}
+end
+
+local function requestSave()
+    if configLoading or not canFile or saveQueued then return end
+    saveQueued = true
+    task.delay(1, function()
+        saveQueued = false
+        if not configLoading and saveConfig then saveConfig() end
+    end)
 end
 
 ------------------------------------------------------------------
@@ -287,6 +322,350 @@ onAccent(function(c)
 end)
 
 ------------------------------------------------------------------
+-- Aura: soft glowing sparks drifting up off a shell around the player
+------------------------------------------------------------------
+local auraObjects = {}
+local auraEmitter
+local auraRate = 22
+
+local function auraColor(c)
+    return ColorSequence.new(c, c:Lerp(Color3.new(1, 1, 1), 0.6))
+end
+
+local function removeAura()
+    for _, o in ipairs(auraObjects) do
+        if o and o.Parent then o:Destroy() end
+    end
+    table.clear(auraObjects)
+    auraEmitter = nil
+end
+
+local function addAura(character)
+    removeAura()
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local shell = Instance.new("Part")
+    shell.Name = "LocalAura"
+    shell.Size = Vector3.new(3.4, 5.4, 3.4)
+    shell.Transparency = 1
+    shell.CanCollide = false
+    shell.CanTouch = false
+    shell.CanQuery = false
+    shell.CastShadow = false
+    shell.Massless = true
+    shell.Anchored = false
+
+    local w = Instance.new("Weld")
+    w.Part0 = root
+    w.Part1 = shell
+    w.C0 = CFrame.new(0, -0.2, 0)
+    w.Parent = shell
+    shell.Parent = character
+
+    local e = Instance.new("ParticleEmitter")
+    e.Name = "LocalAuraEmitter"
+    e.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+    e.Shape = Enum.ParticleEmitterShape.Sphere
+    e.ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface
+    e.Rate = auraRate
+    e.Lifetime = NumberRange.new(1.2, 2)
+    e.Speed = NumberRange.new(0.2, 0.8)
+    e.Acceleration = Vector3.new(0, 2.5, 0)
+    e.Rotation = NumberRange.new(0, 360)
+    e.RotSpeed = NumberRange.new(-60, 60)
+    e.LightEmission = 1
+    e.LightInfluence = 0
+    e.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.5),
+        NumberSequenceKeypoint.new(0.5, 0.35),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    e.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.15, 0.2),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    e.Color = auraColor(accent)
+    e.Parent = shell
+
+    table.insert(auraObjects, shell)
+    auraEmitter = e
+end
+
+onAccent(function(c)
+    if auraEmitter then auraEmitter.Color = auraColor(c) end
+end)
+
+------------------------------------------------------------------
+-- Jump circles: a ring + splash where you land
+------------------------------------------------------------------
+local jumpConn
+local airStart
+local jumpLast = 0
+local jumpSize = 1
+
+local function groundCFrame(pos, normal)
+    if normal.Y > 0.99 then
+        return CFrame.new(pos)
+    end
+    -- make the part's top face point along the surface normal
+    return CFrame.lookAt(pos, pos + normal) * CFrame.Angles(-math.pi / 2, 0, 0)
+end
+
+local function spawnRing(cf, finalSize, withSplash, strength)
+    local part = Instance.new("Part")
+    part.Name = "LocalJumpCircle"
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.CastShadow = false
+    part.Transparency = 1
+    part.Size = Vector3.new(1, 0.05, 1)
+    part.CFrame = cf
+
+    local sg = Instance.new("SurfaceGui")
+    sg.Face = Enum.NormalId.Top
+    sg.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+    sg.CanvasSize = Vector2.new(256, 256)
+    sg.LightInfluence = 0
+    sg.Adornee = part
+    sg.Parent = part
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.fromScale(1, 1)
+    fill.BackgroundColor3 = accent
+    fill.BackgroundTransparency = 0.8
+    fill.BorderSizePixel = 0
+    fill.Parent = sg
+
+    local round = Instance.new("UICorner")
+    round.CornerRadius = UDim.new(0.5, 0)
+    round.Parent = fill
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = accent
+    stroke.Thickness = 10
+    stroke.Parent = fill
+
+    part.Parent = workspace
+
+    if withSplash then
+        local e = Instance.new("ParticleEmitter")
+        e.Name = "LocalSplash"
+        e.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+        e.Rate = 0
+        e.Lifetime = NumberRange.new(0.35, 0.6)
+        e.Speed = NumberRange.new(6, 12)
+        e.SpreadAngle = Vector2.new(70, 70)
+        e.EmissionDirection = Enum.NormalId.Top
+        e.Acceleration = Vector3.new(0, -35, 0)
+        e.LightEmission = 1
+        e.LightInfluence = 0
+        e.Size = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.5),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        e.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0),
+            NumberSequenceKeypoint.new(1, 1),
+        })
+        e.Color = ColorSequence.new(accent, accent:Lerp(Color3.new(1, 1, 1), 0.6))
+        e.Parent = part
+        e:Emit(math.floor(14 * strength))
+    end
+
+    local grow = TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local fade = TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    TweenService:Create(part, grow, {Size = Vector3.new(finalSize, 0.05, finalSize)}):Play()
+    TweenService:Create(stroke, fade, {Transparency = 1}):Play()
+    TweenService:Create(fill, fade, {BackgroundTransparency = 1}):Play()
+    Debris:AddItem(part, 0.9)
+end
+
+local function spawnJumpCircle(character, strength)
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {character}
+    local hit = workspace:Raycast(root.Position, Vector3.new(0, -10, 0), params)
+    if not hit then return end
+
+    local cf = groundCFrame(hit.Position + hit.Normal * 0.06, hit.Normal)
+    local size = 8 * jumpSize * strength
+    spawnRing(cf, size, true, strength)
+    task.delay(0.07, function()
+        spawnRing(cf, size * 0.6, false, strength)
+    end)
+end
+
+local function unhookJump()
+    if jumpConn then
+        jumpConn:Disconnect()
+        jumpConn = nil
+    end
+    airStart = nil
+end
+
+local function hookJump(character)
+    unhookJump()
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    jumpConn = hum.StateChanged:Connect(function(_, new)
+        if new == Enum.HumanoidStateType.Freefall
+            or new == Enum.HumanoidStateType.Jumping then
+            if not airStart then airStart = os.clock() end
+        elseif new == Enum.HumanoidStateType.Landed then
+            local air = airStart and (os.clock() - airStart) or 0
+            airStart = nil
+            local now = os.clock()
+            if air < 0.12 or now - jumpLast < 0.15 then return end
+            jumpLast = now
+            spawnJumpCircle(character, math.clamp(0.8 + air * 0.9, 0.8, 2))
+        elseif new == Enum.HumanoidStateType.Running then
+            airStart = nil
+        end
+    end)
+end
+
+------------------------------------------------------------------
+-- Desync tracker: an ESTIMATE of where the server currently sees you.
+-- A LocalScript cannot read the server's real value, so this shows your
+-- position as it was one network delay (ping / 2) ago.
+------------------------------------------------------------------
+local ghostPart
+local ghostGui
+local ghostLabel
+local ghostBox
+local ghostConn
+local ghostTimes = {}
+local ghostPos = {}
+local ghostPing = 0
+local ghostLabelOn = true
+local ghostLastUi = 0
+
+local function getPing()
+    local ok, v = pcall(function()
+        return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if ok and type(v) == "number" then return v end
+    local ok2, p = pcall(function() return player:GetNetworkPing() * 1000 end)
+    if ok2 and type(p) == "number" then return p end
+    return 0
+end
+
+local function removeGhost()
+    if ghostConn then
+        ghostConn:Disconnect()
+        ghostConn = nil
+    end
+    if ghostPart and ghostPart.Parent then ghostPart:Destroy() end
+    ghostPart, ghostGui, ghostLabel, ghostBox = nil, nil, nil, nil
+    table.clear(ghostTimes)
+    table.clear(ghostPos)
+end
+
+local function addGhost()
+    removeGhost()
+
+    local part = Instance.new("Part")
+    part.Name = "LocalServerGhost"
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.CastShadow = false
+    part.Transparency = 1
+    part.Size = Vector3.new(2.6, 5.2, 1.8)
+    part.Parent = workspace
+
+    local box = Instance.new("SelectionBox")
+    box.Adornee = part
+    box.LineThickness = 0.04
+    box.Color3 = accent
+    box.SurfaceColor3 = accent
+    box.SurfaceTransparency = 0.82
+    box.Visible = false
+    box.Parent = part
+
+    local bb = Instance.new("BillboardGui")
+    bb.Adornee = part
+    bb.Size = UDim2.fromOffset(200, 24)
+    bb.StudsOffset = Vector3.new(0, 4, 0)
+    bb.AlwaysOnTop = true
+    bb.Enabled = ghostLabelOn
+    bb.Parent = part
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.RichText = true
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 13
+    label.TextColor3 = Color3.fromRGB(235, 238, 245)
+    label.TextStrokeTransparency = 0.5
+    label.Text = ""
+    label.Parent = bb
+
+    ghostPart, ghostGui, ghostLabel, ghostBox = part, bb, label, box
+    ghostPing = getPing()
+
+    ghostConn = RunService.Heartbeat:Connect(function()
+        local now = os.clock()
+        local ch = player.Character
+        local root = ch and ch:FindFirstChild("HumanoidRootPart")
+        if not root then
+            box.Visible = false
+            return
+        end
+
+        -- keep ~3 seconds of position history
+        table.insert(ghostTimes, now)
+        table.insert(ghostPos, root.CFrame)
+        while #ghostTimes > 1 and ghostTimes[1] < now - 3 do
+            table.remove(ghostTimes, 1)
+            table.remove(ghostPos, 1)
+        end
+
+        -- where you were one network delay ago
+        local target = now - ghostPing / 2000
+        local est = root.CFrame
+        for i = #ghostTimes, 1, -1 do
+            if ghostTimes[i] <= target then
+                local j = ghostTimes[i + 1] and i + 1 or i
+                local t0, t1 = ghostTimes[i], ghostTimes[j]
+                local a = t1 > t0 and (target - t0) / (t1 - t0) or 0
+                est = ghostPos[i]:Lerp(ghostPos[j], a)
+                break
+            end
+        end
+
+        part.CFrame = est * CFrame.new(0, -0.5, 0)
+        local dist = (est.Position - root.Position).Magnitude
+        box.Visible = dist > 0.25
+
+        if now - ghostLastUi > 0.25 then
+            ghostLastUi = now
+            ghostPing = getPing()
+            label.Text = string.format(
+                '<font color="#%s">SERVER</font>  %d ms  |  %.1f studs',
+                accent:ToHex(), math.floor(ghostPing + 0.5), dist)
+        end
+    end)
+end
+
+onAccent(function(c)
+    if ghostBox then
+        ghostBox.Color3 = c
+        ghostBox.SurfaceColor3 = c
+    end
+end)
+
+------------------------------------------------------------------
 -- Fog removal (classic fog + Atmosphere)
 ------------------------------------------------------------------
 local savedAtmos = {}
@@ -335,14 +714,18 @@ end
 
 ------------------------------------------------------------------
 -- Weather removal
--- Disables particle emitters and sounds whose name (or a parent's name)
--- looks like weather, plus terrain clouds. Name-based, so a game that
--- names its weather something unusual may not be caught.
+-- Smart mode: silences emitters/sounds that look like weather (by name, or by
+--   behaviour: heavy emitters that spray downward) plus terrain clouds.
+-- Aggressive mode: silences EVERY particle emitter that isn't on a player.
+-- "Silenced" = disabled, zero rate, zero lifetime and invisible, so scripts
+-- that call :Emit() by hand can't bring the particles back either.
 ------------------------------------------------------------------
 local weatherWords = {
-    "rain", "snow", "storm", "weather", "blizzard",
-    "hail", "sleet", "thunder", "drizzle",
+    "rain", "snow", "storm", "weather", "blizzard", "hail", "sleet",
+    "thunder", "drizzle", "precip", "flurr", "downpour",
 }
+local weatherMode = 1 -- 1 = Smart, 2 = Aggressive
+local weatherOn = false
 local weatherEmitters = {}
 local weatherSounds = {}
 local weatherConn
@@ -350,6 +733,14 @@ local weatherLoop
 local weatherToken = 0
 local cloudsInst
 local cloudsWas
+
+local function inCharacter(inst)
+    for _, p in ipairs(Players:GetPlayers()) do
+        local ch = p.Character
+        if ch and inst:IsDescendantOf(ch) then return true end
+    end
+    return false
+end
 
 local function looksLikeWeather(inst)
     local node = inst
@@ -364,11 +755,34 @@ local function looksLikeWeather(inst)
     return false
 end
 
+local function behavesLikeWeather(e)
+    local falling = e.EmissionDirection == Enum.NormalId.Bottom
+        or e.Acceleration.Y <= -5
+    return falling and e.Rate >= 20
+end
+
+local function silence(e)
+    e.Enabled = false
+    e.Rate = 0
+    e.Lifetime = NumberRange.new(0)
+    e.Transparency = NumberSequence.new(1)
+    e:Clear()
+end
+
 local function killWeather(inst)
+    if not weatherOn or not inst.Parent then return end
     if inst:IsA("ParticleEmitter") then
-        if weatherEmitters[inst] == nil and looksLikeWeather(inst) then
-            weatherEmitters[inst] = inst.Enabled
-            inst.Enabled = false
+        if weatherEmitters[inst] ~= nil then return end
+        if inCharacter(inst) then return end
+        if string.sub(inst.Name, 1, 5) == "Local" then return end
+        if weatherMode == 2 or looksLikeWeather(inst) or behavesLikeWeather(inst) then
+            weatherEmitters[inst] = {
+                Enabled = inst.Enabled,
+                Rate = inst.Rate,
+                Lifetime = inst.Lifetime,
+                Transparency = inst.Transparency,
+            }
+            silence(inst)
         end
     elseif inst:IsA("Sound") then
         if weatherSounds[inst] == nil and looksLikeWeather(inst) then
@@ -391,8 +805,8 @@ local function weatherTick()
     for inst in pairs(weatherEmitters) do
         if not inst.Parent then
             weatherEmitters[inst] = nil
-        elseif inst.Enabled then
-            inst.Enabled = false
+        elseif inst.Enabled or inst.Rate ~= 0 then
+            silence(inst)
         end
     end
     for inst in pairs(weatherSounds) do
@@ -406,12 +820,19 @@ end
 
 local function setWeather(on)
     weatherToken += 1
+    weatherOn = on
     if weatherConn then weatherConn:Disconnect() weatherConn = nil end
     if weatherLoop then weatherLoop:Disconnect() weatherLoop = nil end
 
     if on then
         local token = weatherToken
-        weatherConn = workspace.DescendantAdded:Connect(killWeather)
+
+        -- new objects (small delay so scripts can finish setting properties)
+        weatherConn = workspace.DescendantAdded:Connect(function(inst)
+            if inst:IsA("ParticleEmitter") or inst:IsA("Sound") then
+                task.delay(0.1, killWeather, inst)
+            end
+        end)
 
         -- one-time scan, spread over several frames so it doesn't hitch
         task.spawn(function()
@@ -428,13 +849,18 @@ local function setWeather(on)
         local last = os.clock()
         weatherLoop = RunService.Heartbeat:Connect(function()
             local now = os.clock()
-            if now - last < 1 then return end
+            if now - last < 0.5 then return end
             last = now
             weatherTick()
         end)
     else
-        for inst, was in pairs(weatherEmitters) do
-            if inst.Parent then inst.Enabled = was end
+        for inst, saved in pairs(weatherEmitters) do
+            if inst.Parent then
+                inst.Lifetime = saved.Lifetime
+                inst.Transparency = saved.Transparency
+                inst.Rate = saved.Rate
+                inst.Enabled = saved.Enabled
+            end
         end
         table.clear(weatherEmitters)
         for inst, vol in pairs(weatherSounds) do
@@ -480,6 +906,72 @@ gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.DisplayOrder = 100
 gui.Parent = player:WaitForChild("PlayerGui")
+
+-- Screen effects layer (sits under the menu)
+local fxGui = Instance.new("ScreenGui")
+fxGui.Name = "VisualClientFX"
+fxGui.ResetOnSpawn = false
+fxGui.IgnoreGuiInset = true
+fxGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+fxGui.DisplayOrder = 50
+fxGui.Parent = player:WaitForChild("PlayerGui")
+
+local vignette = Instance.new("Frame")
+vignette.Name = "Vignette"
+vignette.Size = UDim2.fromScale(1, 1)
+vignette.BackgroundTransparency = 1
+vignette.Visible = false
+vignette.Parent = fxGui
+
+local vignetteStrength = 0.6
+local vignetteGradients = {}
+local vignetteFrames = {}
+
+local function vignetteSequence()
+    local t0 = 1 - vignetteStrength
+    return NumberSequence.new({
+        NumberSequenceKeypoint.new(0, t0),
+        NumberSequenceKeypoint.new(0.4, t0 + (1 - t0) * 0.7),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+end
+
+local function vignetteEdge(size, pos, anchor, rotation)
+    local f = Instance.new("Frame")
+    f.Size = size
+    f.Position = pos
+    f.AnchorPoint = anchor
+    f.BorderSizePixel = 0
+    f.BackgroundColor3 = Color3.new(0, 0, 0)
+    f.Parent = vignette
+
+    local g = Instance.new("UIGradient")
+    g.Rotation = rotation
+    g.Transparency = vignetteSequence()
+    g.Parent = f
+
+    table.insert(vignetteGradients, g)
+    table.insert(vignetteFrames, f)
+end
+
+vignetteEdge(UDim2.new(1, 0, 0.22, 0), UDim2.fromScale(0, 0), Vector2.new(0, 0), 90)  -- top
+vignetteEdge(UDim2.new(1, 0, 0.22, 0), UDim2.fromScale(0, 1), Vector2.new(0, 1), 270) -- bottom
+vignetteEdge(UDim2.new(0.14, 0, 1, 0), UDim2.fromScale(0, 0), Vector2.new(0, 0), 0)   -- left
+vignetteEdge(UDim2.new(0.14, 0, 1, 0), UDim2.fromScale(1, 0), Vector2.new(1, 0), 180) -- right
+
+local function setVignetteStrength(v)
+    vignetteStrength = v
+    for _, g in ipairs(vignetteGradients) do
+        g.Transparency = vignetteSequence()
+    end
+end
+
+-- edges are tinted with a very dark version of the accent color
+onAccent(function(c)
+    for _, f in ipairs(vignetteFrames) do
+        f.BackgroundColor3 = c:Lerp(Color3.new(0, 0, 0), 0.8)
+    end
+end)
 
 -- HUD: watermark
 local watermark = Instance.new("TextLabel")
@@ -550,6 +1042,153 @@ local function refreshArray()
 end
 onAccent(function() refreshArray() end)
 
+-- HUD stats: FPS counter + ping tracker (small panels under the watermark)
+local statsFrame = Instance.new("Frame")
+statsFrame.Name = "Stats"
+statsFrame.Position = UDim2.fromOffset(8, 40)
+statsFrame.Size = UDim2.fromOffset(200, 0)
+statsFrame.AutomaticSize = Enum.AutomaticSize.Y
+statsFrame.BackgroundTransparency = 1
+statsFrame.Parent = gui
+do
+    local l = vlist(statsFrame)
+    l.Padding = UDim.new(0, 4)
+end
+
+local GOOD = Color3.fromRGB(70, 255, 140)
+local OKAY = Color3.fromRGB(255, 200, 70)
+local BAD = Color3.fromRGB(255, 75, 75)
+local HISTORY = 30
+
+local function avgOf(values)
+    local s = 0
+    for _, v in ipairs(values) do s += v end
+    return s / #values
+end
+
+local function makeStat(order, title, formatFn, colorFn, extraFn, floorValue)
+    local values = {}
+    local graphOn = true
+
+    local frame = Instance.new("Frame")
+    frame.Name = title .. "Stat"
+    frame.LayoutOrder = order
+    frame.Size = UDim2.new(1, 0, 0, 0)
+    frame.AutomaticSize = Enum.AutomaticSize.Y
+    frame.BackgroundColor3 = BG
+    frame.BackgroundTransparency = 0.25
+    frame.BorderSizePixel = 0
+    frame.Visible = false
+    frame.Parent = statsFrame
+    corner(frame, 4)
+    vlist(frame)
+
+    local label = Instance.new("TextLabel")
+    label.LayoutOrder = 0
+    label.Size = UDim2.new(1, 0, 0, 22)
+    label.BackgroundTransparency = 1
+    label.RichText = true
+    label.Font = FONTB
+    label.TextSize = 14
+    label.TextColor3 = TEXT
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+
+    local graph = Instance.new("Frame")
+    graph.LayoutOrder = 1
+    graph.Size = UDim2.new(1, 0, 0, 28)
+    graph.BackgroundTransparency = 1
+    graph.Parent = frame
+
+    local gp = Instance.new("UIPadding")
+    gp.PaddingLeft = UDim.new(0, 6)
+    gp.PaddingRight = UDim.new(0, 6)
+    gp.PaddingBottom = UDim.new(0, 4)
+    gp.Parent = graph
+
+    local bars = {}
+    for i = 1, HISTORY do
+        local b = Instance.new("Frame")
+        b.AnchorPoint = Vector2.new(0, 1)
+        b.Position = UDim2.new((i - 1) / HISTORY, 0, 1, 0)
+        b.Size = UDim2.new(1 / HISTORY, -1, 0, 0)
+        b.BorderSizePixel = 0
+        b.Visible = false
+        b.Parent = graph
+        bars[i] = b
+    end
+
+    local function redraw()
+        local n = #values
+        if n == 0 then
+            label.Text = string.format('  <font color="#%s">%s</font>  ...', accent:ToHex(), title)
+            return
+        end
+
+        local last = values[n]
+        label.Text = string.format(
+            '  <font color="#%s">%s</font>  <font color="#%s">%s</font>  <font color="#%s">%s</font>',
+            accent:ToHex(), title,
+            colorFn(last):ToHex(), formatFn(last),
+            DIM:ToHex(), extraFn(values))
+
+        if graphOn then
+            local peak = floorValue
+            for _, v in ipairs(values) do
+                if v > peak then peak = v end
+            end
+            for i, bar in ipairs(bars) do
+                local v = values[n - (HISTORY - i)]
+                if v then
+                    bar.Visible = true
+                    bar.Size = UDim2.new(1 / HISTORY, -1, math.clamp(v / peak, 0.04, 1), 0)
+                    bar.BackgroundColor3 = colorFn(v)
+                else
+                    bar.Visible = false
+                end
+            end
+        end
+    end
+
+    onAccent(function() redraw() end)
+
+    return {
+        frame = frame,
+        push = function(v)
+            table.insert(values, v)
+            if #values > HISTORY then table.remove(values, 1) end
+            redraw()
+        end,
+        reset = function()
+            table.clear(values)
+            redraw()
+        end,
+        setGraph = function(on)
+            graphOn = on
+            graph.Visible = on
+            if on then redraw() end
+        end,
+    }
+end
+
+local fpsStat = makeStat(1, "FPS",
+    function(v) return tostring(math.floor(v + 0.5)) end,
+    function(v) return v >= 55 and GOOD or (v >= 30 and OKAY or BAD) end,
+    function(vals) return string.format("avg %d", math.floor(avgOf(vals) + 0.5)) end,
+    60)
+
+local pingStat = makeStat(2, "PING",
+    function(v) return string.format("%d ms", math.floor(v + 0.5)) end,
+    function(v) return v <= 80 and GOOD or (v <= 150 and OKAY or BAD) end,
+    function(vals)
+        local m = 0
+        for _, v in ipairs(vals) do
+            if v > m then m = v end
+        end
+        return string.format("avg %d | max %d", math.floor(avgOf(vals) + 0.5), math.floor(m + 0.5))
+    end,
+    150)
+
 -- Click GUI root
 local clickGui = Instance.new("Frame")
 clickGui.Name = "ClickGui"
@@ -594,6 +1233,7 @@ local function makePanel(title, x)
     panel.BorderSizePixel = 0
     panel.ClipsDescendants = true
     panel.Parent = clickGui
+    panelRegistry[title] = panel
     corner(panel, 6)
     vlist(panel)
 
@@ -635,7 +1275,7 @@ local function nextOrder(panel)
 end
 
 -- Cycle widget: click to step through options
-local function addCycle(parent, label, options, start, onChange)
+local function addCycle(parent, label, options, start, onChange, key)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(1, 0, 0, 24)
     styleButton(b)
@@ -650,7 +1290,17 @@ local function addCycle(parent, label, options, start, onChange)
         idx = idx % #options + 1
         refresh()
         onChange(idx)
+        requestSave()
     end)
+    if key then
+        registerConfig(key, function() return idx end, function(i)
+            if type(i) == "number" and options[i] then
+                idx = i
+                refresh()
+                onChange(i)
+            end
+        end)
+    end
     b.Parent = parent
     return {
         button = b,
@@ -662,7 +1312,7 @@ local function addCycle(parent, label, options, start, onChange)
 end
 
 -- Slider widget
-local function addSlider(parent, label, minV, maxV, value, step, onChange)
+local function addSlider(parent, label, minV, maxV, value, step, onChange, key)
     local f = Instance.new("Frame")
     f.Size = UDim2.new(1, 0, 0, 34)
     f.BackgroundColor3 = SUB
@@ -693,7 +1343,9 @@ local function addSlider(parent, label, minV, maxV, value, step, onChange)
     corner(fill, 2)
     onAccent(function(c) fill.BackgroundColor3 = c end)
 
+    local cur = value
     local function show(v)
+        cur = v
         local pct = (v - minV) / (maxV - minV)
         fill.Size = UDim2.new(pct, 0, 1, 0)
         t.Text = label .. ": " .. string.format("%g", v)
@@ -707,6 +1359,7 @@ local function addSlider(parent, label, minV, maxV, value, step, onChange)
         v = math.clamp(v, minV, maxV)
         show(v)
         onChange(v)
+        requestSave()
     end
 
     f.InputBegan:Connect(function(input)
@@ -716,6 +1369,16 @@ local function addSlider(parent, label, minV, maxV, value, step, onChange)
             setFromX(input.Position.X)
         end
     end)
+
+    if key then
+        registerConfig(key, function() return cur end, function(v)
+            if type(v) == "number" then
+                v = math.clamp(v, minV, maxV)
+                show(v)
+                onChange(v)
+            end
+        end)
+    end
 
     f.Parent = parent
     return f
@@ -787,16 +1450,17 @@ local function addModule(panel, name, onToggle)
             warn("[VisualClient] " .. name .. ": " .. tostring(err))
         end
         refreshArray()
+        requestSave()
     end
 
     function mod.cycle(label, options, start, onChange)
         markSettings()
-        return addCycle(settings, label, options, start, onChange)
+        return addCycle(settings, label, options, start, onChange, name .. "/" .. label)
     end
 
     function mod.slider(label, minV, maxV, value, step, onChange)
         markSettings()
-        return addSlider(settings, label, minV, maxV, value, step, onChange)
+        return addSlider(settings, label, minV, maxV, value, step, onChange, name .. "/" .. label)
     end
 
     btn.MouseButton1Click:Connect(function() mod.set(not mod.enabled) end)
@@ -862,6 +1526,19 @@ local wingMod = addModule(visualPanel, "Wings", function(on)
 end)
 wingMod.slider("Flap Speed", 0, 8, 3, 0.5, function(v) wingSpeed = v end)
 
+local auraMod = addModule(visualPanel, "Aura", function(on)
+    if on then
+        local ch = player.Character
+        if ch then addAura(ch) end
+    else
+        removeAura()
+    end
+end)
+auraMod.slider("Density", 5, 60, 22, 1, function(v)
+    auraRate = v
+    if auraEmitter then auraEmitter.Rate = v end
+end)
+
 local trailMod = addModule(visualPanel, "Player Trails", function(on)
     if on then
         local ch = player.Character
@@ -873,6 +1550,28 @@ end)
 trailMod.slider("Length", 0.2, 2, 0.65, 0.05, function(v)
     trailLifetime = v
     if activeTrail then activeTrail.Lifetime = v end
+end)
+
+local jumpMod = addModule(visualPanel, "Jump Circles", function(on)
+    if on then
+        local ch = player.Character
+        if ch then hookJump(ch) end
+    else
+        unhookJump()
+    end
+end)
+jumpMod.slider("Size", 0.5, 2.5, 1, 0.1, function(v) jumpSize = v end)
+
+local ghostMod = addModule(visualPanel, "Desync Tracker", function(on)
+    if on then
+        addGhost()
+    else
+        removeGhost()
+    end
+end)
+ghostMod.cycle("Label", {"On", "Off"}, 1, function(i)
+    ghostLabelOn = (i == 1)
+    if ghostGui then ghostGui.Enabled = ghostLabelOn end
 end)
 
 -- RENDER
@@ -896,16 +1595,28 @@ local fovMod = addModule(renderPanel, "FOV", function(on)
 end)
 fovMod.slider("Value", 40, 120, fovValue, 1, function(v) fovValue = v end)
 
-addModule(renderPanel, "Fullbright", function(on)
+local fullbrightIntensity = 1
+local fullbrightMod
+
+local function applyFullbright()
+    local gray = math.clamp(math.floor(180 * fullbrightIntensity + 0.5), 0, 255)
+    Lighting.Brightness = 3 * fullbrightIntensity
+    Lighting.Ambient = Color3.fromRGB(gray, gray, gray)
+    Lighting.OutdoorAmbient = Color3.fromRGB(gray, gray, gray)
+end
+
+fullbrightMod = addModule(renderPanel, "Fullbright", function(on)
     if on then
-        Lighting.Brightness = 3
-        Lighting.Ambient = Color3.fromRGB(180, 180, 180)
-        Lighting.OutdoorAmbient = Color3.fromRGB(180, 180, 180)
+        applyFullbright()
     else
         Lighting.Brightness = oldLighting.Brightness
         Lighting.Ambient = oldLighting.Ambient
         Lighting.OutdoorAmbient = oldLighting.OutdoorAmbient
     end
+end)
+fullbrightMod.slider("Intensity", 0.2, 3, 1, 0.1, function(v)
+    fullbrightIntensity = v
+    if fullbrightMod.enabled then applyFullbright() end
 end)
 
 local correction = Instance.new("ColorCorrectionEffect")
@@ -930,12 +1641,43 @@ local blurMod = addModule(renderPanel, "Blur Effect", function(on)
 end)
 blurMod.slider("Size", 2, 24, 8, 1, function(v) blur.Size = v end)
 
+local bloom = Instance.new("BloomEffect")
+bloom.Name = "VisualClientBloom"
+bloom.Enabled = false
+bloom.Intensity = 1
+bloom.Size = 24
+bloom.Threshold = 0.8
+bloom.Parent = Lighting
+
+local bloomMod = addModule(renderPanel, "Bloom", function(on)
+    bloom.Enabled = on
+end)
+bloomMod.slider("Intensity", 0.2, 3, 1, 0.1, function(v) bloom.Intensity = v end)
+bloomMod.slider("Size", 8, 56, 24, 2, function(v) bloom.Size = v end)
+
+local rays = Instance.new("SunRaysEffect")
+rays.Name = "VisualClientRays"
+rays.Enabled = false
+rays.Intensity = 0.25
+rays.Spread = 1
+rays.Parent = Lighting
+
+local raysMod = addModule(renderPanel, "Sun Rays", function(on)
+    rays.Enabled = on
+end)
+raysMod.slider("Intensity", 0.05, 1, 0.25, 0.05, function(v) rays.Intensity = v end)
+
+local vignetteMod = addModule(renderPanel, "Vignette", function(on)
+    vignette.Visible = on
+end)
+vignetteMod.slider("Strength", 0.2, 1, 0.6, 0.05, setVignetteStrength)
+
 local originalEffects = {}
 addModule(renderPanel, "FPS Boost", function(on)
     if on then
         table.clear(originalEffects)
         for _, obj in ipairs(Lighting:GetDescendants()) do
-            if obj:IsA("PostEffect") and obj ~= correction and obj ~= blur then
+            if obj:IsA("PostEffect") and not string.find(obj.Name, "^VisualClient") then
                 originalEffects[obj] = obj.Enabled
                 obj.Enabled = false
             end
@@ -969,7 +1711,14 @@ end)
 local worldPanel = makePanel("World", 420)
 
 addModule(worldPanel, "Remove Fog", setFog)
-addModule(worldPanel, "Remove Weather", setWeather)
+local weatherMod = addModule(worldPanel, "Remove Weather", setWeather)
+weatherMod.cycle("Mode", {"Smart", "Aggressive"}, 1, function(i)
+    weatherMode = i
+    if weatherMod.enabled then
+        setWeather(false)
+        setWeather(true)
+    end
+end)
 
 local timeValue = 14
 local timeBefore = Lighting.ClockTime
@@ -993,11 +1742,70 @@ local timeMod = addModule(worldPanel, "Time Changer", function(on)
 end)
 timeMod.slider("Hour", 0, 23.5, 14, 0.5, function(v) timeValue = v end)
 
+-- HUD
+local hudPanel = makePanel("HUD", 810)
+
+local fpsConn
+local fpsMod = addModule(hudPanel, "FPS Counter", function(on)
+    if fpsConn then
+        fpsConn:Disconnect()
+        fpsConn = nil
+    end
+    fpsStat.reset()
+    fpsStat.frame.Visible = on
+    if on then
+        local frames, acc = 0, 0
+        fpsConn = RunService.Heartbeat:Connect(function(dt)
+            frames += 1
+            acc += dt
+            if acc >= 0.5 then
+                fpsStat.push(frames / acc)
+                frames, acc = 0, 0
+            end
+        end)
+    end
+end)
+fpsMod.hidden = true
+fpsMod.cycle("Graph", {"On", "Off"}, 1, function(i) fpsStat.setGraph(i == 1) end)
+
+local pingConn
+local pingMod = addModule(hudPanel, "Ping Tracker", function(on)
+    if pingConn then
+        pingConn:Disconnect()
+        pingConn = nil
+    end
+    pingStat.reset()
+    pingStat.frame.Visible = on
+    if on then
+        pingStat.push(getPing())
+        local acc = 0
+        pingConn = RunService.Heartbeat:Connect(function(dt)
+            acc += dt
+            if acc >= 0.5 then
+                acc = 0
+                pingStat.push(getPing())
+            end
+        end)
+    end
+end)
+pingMod.hidden = true
+pingMod.cycle("Graph", {"On", "Off"}, 1, function(i) pingStat.setGraph(i == 1) end)
+
+local watermarkMod = addModule(hudPanel, "Watermark", function(on)
+    watermark.Visible = on
+end)
+watermarkMod.hidden = true
+
+-- on by default (a saved config overrides these)
+watermarkMod.set(true)
+fpsMod.set(true)
+pingMod.set(true)
+
 -- CLIENT
 local clientPanel = makePanel("Client", 615)
 
 do
-    local w = addCycle(clientPanel.frame, "Theme Color", presetNames, accentIndex, setAccentIndex)
+    local w = addCycle(clientPanel.frame, "Theme Color", presetNames, accentIndex, setAccentIndex, "Client/Theme Color")
     w.button.LayoutOrder = nextOrder(clientPanel)
     table.insert(colorWidgets, w)
 end
@@ -1022,7 +1830,7 @@ keyBtn = addAction(clientPanel, "", function()
 end)
 updateKeyUi()
 
-local arrayMod = addModule(clientPanel, "ArrayList", function(on)
+local arrayMod = addModule(hudPanel, "ArrayList", function(on)
     arrayFrame.Visible = on
 end)
 arrayMod.hidden = true
@@ -1039,6 +1847,7 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, pr
             end
             binding = false
             updateKeyUi()
+            requestSave()
         end
         return
     end
@@ -1068,6 +1877,7 @@ end))
 table.insert(connections, UserInputService.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
+        if dragTarget then requestSave() end
         dragTarget = nil
         activeSlider = nil
     end
@@ -1075,6 +1885,8 @@ end))
 
 -- Keep cosmetics after respawn
 table.insert(connections, player.CharacterAdded:Connect(function(character)
+    table.clear(ghostTimes)
+    table.clear(ghostPos)
     local hum = character:WaitForChild("Humanoid", 5)
     character:WaitForChild("Head", 5)
     character:WaitForChild("HumanoidRootPart", 5)
@@ -1085,12 +1897,17 @@ table.insert(connections, player.CharacterAdded:Connect(function(character)
     if hatMod.enabled then addHat(character) end
     if trailMod.enabled then addTrail(character) end
     if wingMod.enabled then addWings(character) end
+    if auraMod.enabled then addAura(character) end
+    if jumpMod.enabled then hookJump(character) end
 end))
 
 ------------------------------------------------------------------
 -- Unload
 ------------------------------------------------------------------
 local function cleanup()
+    -- save the current state first, then stop auto-saving while modules switch off
+    if saveConfig then saveConfig() end
+    configLoading = true
     for i = #modules, 1, -1 do
         local m = modules[i]
         if m.enabled then pcall(m.set, false) end
@@ -1102,11 +1919,143 @@ local function cleanup()
     removeHat()
     removeTrail()
     removeWings()
+    removeAura()
+    unhookJump()
+    removeGhost()
     correction:Destroy()
     blur:Destroy()
+    bloom:Destroy()
+    rays:Destroy()
+    fxGui:Destroy()
     gui:Destroy()
 end
 
+------------------------------------------------------------------
+-- Config saving (needs an executor with writefile / readfile)
+------------------------------------------------------------------
+local CONFIG_PATH = canFolder and "VisualClient/config.json" or "VisualClientConfig.json"
+
+local function readConfig()
+    if not canFile or not isfile(CONFIG_PATH) then return nil end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(CONFIG_PATH))
+    end)
+    if ok and type(data) == "table" then return data end
+    return nil
+end
+
+saveConfig = function()
+    if not canFile then return false end
+
+    local data = {
+        version = 1,
+        accent = accentIndex,
+        menuKey = menuKey.Name,
+        modules = {},
+        values = {},
+        panels = {},
+    }
+    for _, m in ipairs(modules) do
+        data.modules[m.name] = m.enabled
+    end
+    for key, e in pairs(configEntries) do
+        local ok, v = pcall(e.get)
+        if ok then data.values[key] = v end
+    end
+    for title, panel in pairs(panelRegistry) do
+        data.panels[title] = {
+            x = panel.Position.X.Offset,
+            y = panel.Position.Y.Offset,
+        }
+    end
+
+    local ok = pcall(function()
+        if canFolder and not isfolder("VisualClient") then
+            makefolder("VisualClient")
+        end
+        writefile(CONFIG_PATH, HttpService:JSONEncode(data))
+    end)
+    return ok
+end
+
+local function applyConfig(data)
+    configLoading = true
+
+    if type(data.accent) == "number" and presets[data.accent] then
+        setAccentIndex(data.accent)
+    end
+
+    -- settings first, so modules switch on with their saved values
+    if type(data.values) == "table" then
+        for key, v in pairs(data.values) do
+            local e = configEntries[key]
+            if e then pcall(e.set, v) end
+        end
+    end
+
+    if type(data.menuKey) == "string" then
+        local ok, kc = pcall(function() return Enum.KeyCode[data.menuKey] end)
+        if ok and kc then
+            menuKey = kc
+            updateKeyUi()
+        end
+    end
+
+    if type(data.panels) == "table" then
+        for title, pos in pairs(data.panels) do
+            local panel = panelRegistry[title]
+            if panel and type(pos) == "table"
+                and type(pos.x) == "number" and type(pos.y) == "number" then
+                panel.Position = UDim2.fromOffset(pos.x, pos.y)
+            end
+        end
+    end
+
+    if type(data.modules) == "table" then
+        for _, m in ipairs(modules) do
+            local want = data.modules[m.name]
+            if type(want) == "boolean" then m.set(want) end
+        end
+    end
+
+    configLoading = false
+end
+
+local function flash(btn, text, base)
+    btn.Text = "   " .. text
+    task.delay(1.5, function()
+        if btn.Parent then btn.Text = "   " .. base end
+    end)
+end
+
+local saveBtn
+saveBtn = addAction(clientPanel, "Save Config", function()
+    if not canFile then
+        flash(saveBtn, "No file access here", "Save Config")
+    elseif saveConfig() then
+        flash(saveBtn, "Saved!", "Save Config")
+    else
+        flash(saveBtn, "Save failed", "Save Config")
+    end
+end)
+
+local loadBtn
+loadBtn = addAction(clientPanel, "Load Config", function()
+    local data = readConfig()
+    if data then
+        applyConfig(data)
+        flash(loadBtn, "Loaded!", "Load Config")
+    else
+        flash(loadBtn, canFile and "No saved config" or "No file access here", "Load Config")
+    end
+end)
+
 addAction(clientPanel, "Unload Client", cleanup)
+
+-- auto-load the saved config on start
+if canFile then
+    local data = readConfig()
+    if data then applyConfig(data) end
+end
 
 print("Visual Client loaded. Press " .. menuKey.Name .. " to hide/show the menu.")
