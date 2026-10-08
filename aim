@@ -1,6 +1,13 @@
 -- VISUAL CLIENT | LocalScript
 -- Cosmetic and visual modules only.
--- Default menu key: RightShift (rebind it from the menu)
+--
+-- Controls:
+--   Left-click a module  = toggle it
+--   Right-click a module = open its settings (modules with a "+" have settings)
+--   Drag a panel header  = move that panel
+--   Menu key (default RightShift) = show/hide the menu (rebind it in the Client panel)
+--
+-- The "Color" setting changes the China Hat, Player Trails, Wings and the GUI accent together.
 
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
@@ -8,219 +15,88 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
-local camera = workspace.CurrentCamera
+local function cam() return workspace.CurrentCamera end
 
--- Remove old copies if the script is run more than once
+-- Remove leftovers from an earlier run of this script
 do
     local pg = player:WaitForChild("PlayerGui")
-    local oldGui = pg:FindFirstChild("VisualClient")
-    if oldGui then oldGui:Destroy() end
+    local old = pg:FindFirstChild("VisualClient")
+    if old then old:Destroy() end
     for _, e in ipairs(Lighting:GetChildren()) do
         if e.Name == "VisualClientColor" or e.Name == "VisualClientBlur" then
             e:Destroy()
         end
     end
+    pcall(function() RunService:UnbindFromRenderStep("VisualClientFOV") end)
 end
 
-local oldFOV = camera.FieldOfView
+local oldFOV = cam().FieldOfView
 local oldLighting = {
     Brightness = Lighting.Brightness,
-    ClockTime = Lighting.ClockTime,
     Ambient = Lighting.Ambient,
     OutdoorAmbient = Lighting.OutdoorAmbient,
-    GlobalShadows = Lighting.GlobalShadows,
     FogStart = Lighting.FogStart,
     FogEnd = Lighting.FogEnd,
 }
 
-local enabled = {}
 local connections = {}
-local cosmetics = {}
-local trailObjects = {}
-local originalEffects = {}
-local resetFns = {} -- functions run on unload to switch modules off
+local modules = {}
 
--- GUI
-local gui = Instance.new("ScreenGui")
-gui.Name = "VisualClient"
-gui.ResetOnSpawn = false
-gui.Parent = player:WaitForChild("PlayerGui")
-
-local main = Instance.new("Frame")
-main.Size = UDim2.fromOffset(280, 470)
-main.Position = UDim2.new(0, 35, 0.3, 0)
-main.BackgroundColor3 = Color3.fromRGB(24, 27, 35)
-main.BorderSizePixel = 0
-main.Parent = gui
-
-Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
-
-local stroke = Instance.new("UIStroke", main)
-stroke.Color = Color3.fromRGB(70, 155, 255)
-stroke.Thickness = 1.3
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -20, 0, 42)
-title.Position = UDim2.fromOffset(12, 0)
-title.BackgroundTransparency = 1
-title.Text = "  VISUAL CLIENT"
-title.TextColor3 = Color3.fromRGB(100, 185, 255)
-title.TextSize = 19
-title.Font = Enum.Font.GothamBold
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = main
-
--- Drag window
-local dragging, dragStart, startPosition
-
-table.insert(connections, title.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPosition = main.Position
-    end
-end))
-
-table.insert(connections, UserInputService.InputChanged:Connect(function(input)
-    if dragging and (
-        input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch
-    ) then
-        local delta = input.Position - dragStart
-        main.Position = UDim2.new(
-            startPosition.X.Scale,
-            startPosition.X.Offset + delta.X,
-            startPosition.Y.Scale,
-            startPosition.Y.Offset + delta.Y
-        )
-    end
-end))
-
-table.insert(connections, UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
-end))
-
-local list = Instance.new("ScrollingFrame")
-list.Position = UDim2.fromOffset(10, 48)
-list.Size = UDim2.new(1, -20, 1, -58)
-list.BackgroundTransparency = 1
-list.BorderSizePixel = 0
-list.ScrollBarThickness = 4
-list.AutomaticCanvasSize = Enum.AutomaticSize.Y
-list.CanvasSize = UDim2.new()
-list.Parent = main
-
-local layout = Instance.new("UIListLayout", list)
-layout.Padding = UDim.new(0, 6)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-
-local order = 0
-local function button(label, callback)
-    order += 1
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -6, 0, 36)
-    b.BackgroundColor3 = Color3.fromRGB(39, 44, 55)
-    b.BorderSizePixel = 0
-    b.TextColor3 = Color3.fromRGB(230, 235, 245)
-    b.Font = Enum.Font.GothamMedium
-    b.TextSize = 13
-    b.Text = label
-    b.LayoutOrder = order
-    b.Parent = list
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-    b.MouseButton1Click:Connect(callback)
-    return b
-end
-
-local function module(name, callback)
-    enabled[name] = false
-    local b
-    b = button("[ OFF ]  " .. name, function()
-        enabled[name] = not enabled[name]
-        b.Text = (enabled[name] and "[ ON ]   " or "[ OFF ]  ") .. name
-        b.BackgroundColor3 = enabled[name]
-            and Color3.fromRGB(35, 100, 155)
-            or Color3.fromRGB(39, 44, 55)
-        callback(enabled[name])
-    end)
-    table.insert(resetFns, function()
-        if enabled[name] then
-            enabled[name] = false
-            callback(false)
-        end
-    end)
-    return b
-end
-
--- Menu toggle key (rebindable)
-local menuKey = Enum.KeyCode.RightShift
-local binding = false
-local keyButton
-
-local function updateKeyButton()
-    if not keyButton then return end
-    if binding then
-        keyButton.Text = "Menu Key:  press a key... (Esc cancels)"
-    else
-        keyButton.Text = "Menu Key:  " .. menuKey.Name .. "  (click to rebind)"
-    end
-end
-
-keyButton = button("", function()
-    binding = true
-    updateKeyButton()
-end)
-updateKeyButton()
-
-table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
-    if binding then
-        if input.UserInputType == Enum.UserInputType.Keyboard then
-            if input.KeyCode ~= Enum.KeyCode.Escape then
-                menuKey = input.KeyCode
-            end
-            binding = false
-            updateKeyButton()
-        end
-        return
-    end
-
-    if processed then return end
-    if input.KeyCode == menuKey then
-        main.Visible = not main.Visible
-    end
-end))
-
--- China hat: glowing cone built from adornments (no physics, no shadows).
-local hatPresets = {
+------------------------------------------------------------------
+-- Shared accent color (hat, trail, wings, GUI)
+------------------------------------------------------------------
+local presets = {
     {name = "Cyan",   color = Color3.fromRGB(0, 220, 255)},
     {name = "Purple", color = Color3.fromRGB(170, 70, 255)},
     {name = "Pink",   color = Color3.fromRGB(255, 70, 170)},
     {name = "Green",  color = Color3.fromRGB(70, 255, 140)},
     {name = "Gold",   color = Color3.fromRGB(255, 200, 70)},
+    {name = "Red",    color = Color3.fromRGB(255, 75, 75)},
 }
-local hatIndex = 1
-local hatCones = {}   -- {adornment, ...}
-local hatLight
+local presetNames = {}
+for i, p in ipairs(presets) do presetNames[i] = p.name end
 
-local function applyHatColor()
-    local c = hatPresets[hatIndex].color
-    for _, cone in ipairs(hatCones) do
-        cone.Color3 = c
-    end
-    if hatLight then hatLight.Color = c end
+local accentIndex = 1
+local accent = presets[1].color
+local accentListeners = {}
+
+local function onAccent(fn)
+    table.insert(accentListeners, fn)
+    fn(accent)
 end
 
+local function setAccentIndex(i)
+    accentIndex = i
+    accent = presets[i].color
+    for _, fn in ipairs(accentListeners) do fn(accent) end
+end
+
+local function getTorso(character)
+    return character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+end
+
+------------------------------------------------------------------
+-- China hat: glowing cone (adornments, no physics, no shadows)
+------------------------------------------------------------------
+local hatObjects = {}
+local hatCones = {}
+local hatLight
+local hatScale = 1
+
 local function removeHat()
-    for _, obj in ipairs(cosmetics) do
-        if obj and obj.Parent then obj:Destroy() end
+    for _, o in ipairs(hatObjects) do
+        if o and o.Parent then o:Destroy() end
     end
-    table.clear(cosmetics)
+    table.clear(hatObjects)
     table.clear(hatCones)
     hatLight = nil
+end
+
+local function applyHatScale()
+    for _, c in ipairs(hatCones) do
+        c.obj.Radius = c.r * hatScale
+        c.obj.Height = c.h * hatScale
+    end
 end
 
 local function addHat(character)
@@ -228,57 +104,57 @@ local function addHat(character)
     local head = character:FindFirstChild("Head")
     if not head then return end
 
-    -- cone tip points up: rotate +90 degrees about X
     local function cone(radius, height, transparency, yOffset)
         local c = Instance.new("ConeHandleAdornment")
         c.Name = "LocalChinaHat"
         c.Adornee = head
-        c.Radius = radius
-        c.Height = height
+        c.Radius = radius * hatScale
+        c.Height = height * hatScale
         c.Transparency = transparency
+        c.Color3 = accent
         c.CFrame = CFrame.new(0, yOffset, 0) * CFrame.Angles(math.rad(90), 0, 0)
         c.ZIndex = 1
         c.AlwaysOnTop = false
         c.Parent = head
-        table.insert(cosmetics, c)
-        table.insert(hatCones, c)
+        table.insert(hatObjects, c)
+        table.insert(hatCones, {obj = c, r = radius, h = height})
     end
 
-    cone(1.35, 1.15, 0.05, 0.45)   -- solid core
-    cone(1.55, 1.35, 0.65, 0.40)   -- soft outer glow layer
+    cone(1.35, 1.15, 0.05, 0.45) -- solid core
+    cone(1.55, 1.35, 0.65, 0.40) -- soft outer glow layer
 
     hatLight = Instance.new("PointLight")
     hatLight.Name = "LocalChinaHatLight"
     hatLight.Brightness = 1.5
     hatLight.Range = 10
     hatLight.Shadows = false
+    hatLight.Color = accent
     hatLight.Parent = head
-    table.insert(cosmetics, hatLight)
-
-    applyHatColor()
+    table.insert(hatObjects, hatLight)
 end
 
-module("China Hat", function(on)
-    if on then
-        if player.Character then addHat(player.Character) end
-    else
-        removeHat()
-    end
+onAccent(function(c)
+    for _, cc in ipairs(hatCones) do cc.obj.Color3 = c end
+    if hatLight then hatLight.Color = c end
 end)
 
-local hatColorButton
-hatColorButton = button("Hat Color:  Cyan", function()
-    hatIndex = hatIndex % #hatPresets + 1
-    hatColorButton.Text = "Hat Color:  " .. hatPresets[hatIndex].name
-    applyHatColor()
-end)
+------------------------------------------------------------------
+-- Player trail (follows the accent color)
+------------------------------------------------------------------
+local trailObjects = {}
+local activeTrail
+local trailLifetime = 0.65
 
--- Trail cosmetics
+local function trailColor(c)
+    return ColorSequence.new(c, c:Lerp(Color3.new(1, 1, 1), 0.55))
+end
+
 local function removeTrail()
     for _, obj in ipairs(trailObjects) do
         if obj and obj.Parent then obj:Destroy() end
     end
     table.clear(trailObjects)
+    activeTrail = nil
 end
 
 local function addTrail(character)
@@ -297,77 +173,122 @@ local function addTrail(character)
     local trail = Instance.new("Trail")
     trail.Attachment0 = a0
     trail.Attachment1 = a1
-    trail.Lifetime = 0.65
+    trail.Lifetime = trailLifetime
     trail.MinLength = 0.1
     trail.FaceCamera = true
     trail.LightEmission = 0.8
-    trail.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 200, 255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(170, 60, 255))
-    })
+    trail.Color = trailColor(accent)
     trail.Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 0.15),
-        NumberSequenceKeypoint.new(1, 1)
+        NumberSequenceKeypoint.new(1, 1),
     })
     trail.Parent = root
 
     table.insert(trailObjects, a0)
     table.insert(trailObjects, a1)
     table.insert(trailObjects, trail)
+    activeTrail = trail
 end
 
-module("Player Trails", function(on)
-    if on then
-        if player.Character then addTrail(player.Character) end
-    else
-        removeTrail()
-    end
+onAccent(function(c)
+    if activeTrail then activeTrail.Color = trailColor(c) end
 end)
 
--- FOV controls
-local fov = camera.FieldOfView
-button("FOV  -", function()
-    fov = math.max(40, fov - 5)
-    camera.FieldOfView = fov
-end)
+------------------------------------------------------------------
+-- Wings: 2 invisible pivots + 10 thin neon feathers, welded (no physics).
+-- Only the 2 pivot welds are updated per frame to flap.
+------------------------------------------------------------------
+local wingParts = {}
+local wingPivots = {}
+local wingConn
+local wingSpeed = 3
 
-button("FOV  +", function()
-    fov = math.min(120, fov + 5)
-    camera.FieldOfView = fov
-end)
-
-button("Reset FOV", function()
-    fov = oldFOV
-    camera.FieldOfView = oldFOV
-end)
-
--- Sky presets using time of day
-local skyIndex = 1
-local skyPresets = {
-    {name = "Default Day", time = 14},
-    {name = "Sunset", time = 18},
-    {name = "Night", time = 0},
+local feathers = {
+    {len = 3.0, y = 0.85,  tilt = 22,  h = 0.45},
+    {len = 2.8, y = 0.45,  tilt = 10,  h = 0.45},
+    {len = 2.4, y = 0.05,  tilt = -2,  h = 0.42},
+    {len = 1.9, y = -0.35, tilt = -14, h = 0.40},
+    {len = 1.3, y = -0.75, tilt = -26, h = 0.36},
 }
 
-button("Next Sky Preset", function()
-    skyIndex = skyIndex % #skyPresets + 1
-    Lighting.ClockTime = skyPresets[skyIndex].time
-end)
+local function pivotCFrame(side, flap)
+    return CFrame.new(side * 0.35, 0.35, 0.45)
+        * CFrame.Angles(0, -side * math.rad(28), side * flap)
+end
 
--- Fullbright
-module("Fullbright", function(on)
-    if on then
-        Lighting.Brightness = 3
-        Lighting.Ambient = Color3.fromRGB(180, 180, 180)
-        Lighting.OutdoorAmbient = Color3.fromRGB(180, 180, 180)
-    else
-        Lighting.Brightness = oldLighting.Brightness
-        Lighting.Ambient = oldLighting.Ambient
-        Lighting.OutdoorAmbient = oldLighting.OutdoorAmbient
+local function removeWings()
+    if wingConn then
+        wingConn:Disconnect()
+        wingConn = nil
     end
+    for _, p in ipairs(wingParts) do
+        if p and p.Parent then p:Destroy() end
+    end
+    table.clear(wingParts)
+    table.clear(wingPivots)
+end
+
+local function newWingPart(size, transparency)
+    local p = Instance.new("Part")
+    p.Name = "LocalWing"
+    p.Size = size
+    p.Material = Enum.Material.Neon
+    p.Color = accent
+    p.Transparency = transparency
+    p.CanCollide = false
+    p.CanTouch = false
+    p.CanQuery = false
+    p.CastShadow = false
+    p.Massless = true
+    p.Anchored = false
+    return p
+end
+
+local function addWings(character)
+    removeWings()
+    local torso = getTorso(character)
+    if not torso then return end
+
+    for _, side in ipairs({-1, 1}) do
+        local pivot = newWingPart(Vector3.new(0.2, 0.2, 0.2), 1)
+        local pw = Instance.new("Weld")
+        pw.Part0 = torso
+        pw.Part1 = pivot
+        pw.C0 = pivotCFrame(side, 0)
+        pw.Parent = pivot
+        pivot.Parent = character
+        table.insert(wingParts, pivot)
+        table.insert(wingPivots, {weld = pw, side = side})
+
+        for _, f in ipairs(feathers) do
+            local fp = newWingPart(Vector3.new(f.len, f.h, 0.08), 0.1)
+            local fw = Instance.new("Weld")
+            fw.Part0 = pivot
+            fw.Part1 = fp
+            fw.C0 = CFrame.new(0, f.y, 0)
+                * CFrame.Angles(0, 0, side * math.rad(f.tilt))
+                * CFrame.new(side * f.len / 2, 0, 0)
+            fw.Parent = fp
+            fp.Parent = character
+            table.insert(wingParts, fp)
+        end
+    end
+
+    wingConn = RunService.Heartbeat:Connect(function()
+        local flap = math.sin(os.clock() * wingSpeed) * math.rad(14)
+        for _, w in ipairs(wingPivots) do
+            w.weld.C0 = pivotCFrame(w.side, flap)
+        end
+    end)
+end
+
+onAccent(function(c)
+    for _, p in ipairs(wingParts) do p.Color = c end
 end)
 
--- Fog removal (handles both classic fog and Atmosphere objects)
+------------------------------------------------------------------
+-- Fog removal (classic fog + Atmosphere)
+------------------------------------------------------------------
 local savedAtmos = {}
 local fogConn
 
@@ -385,15 +306,13 @@ local function clearFog()
     end
 end
 
-module("Remove Fog", function(on)
+local function setFog(on)
     if fogConn then
         fogConn:Disconnect()
         fogConn = nil
     end
-
     if on then
         clearFog()
-        -- some games keep resetting fog, so re-apply periodically
         local last = 0
         fogConn = RunService.Heartbeat:Connect(function()
             local now = os.clock()
@@ -412,29 +331,583 @@ module("Remove Fog", function(on)
         end
         table.clear(savedAtmos)
     end
+end
+
+------------------------------------------------------------------
+-- Weather removal
+-- Disables particle emitters and sounds whose name (or a parent's name)
+-- looks like weather, plus terrain clouds. Name-based, so a game that
+-- names its weather something unusual may not be caught.
+------------------------------------------------------------------
+local weatherWords = {
+    "rain", "snow", "storm", "weather", "blizzard",
+    "hail", "sleet", "thunder", "drizzle",
+}
+local weatherEmitters = {}
+local weatherSounds = {}
+local weatherConn
+local weatherLoop
+local weatherToken = 0
+local cloudsInst
+local cloudsWas
+
+local function looksLikeWeather(inst)
+    local node = inst
+    for _ = 1, 4 do
+        if not node or node == workspace or node == game then break end
+        local n = string.lower(node.Name)
+        for _, w in ipairs(weatherWords) do
+            if string.find(n, w, 1, true) then return true end
+        end
+        node = node.Parent
+    end
+    return false
+end
+
+local function killWeather(inst)
+    if inst:IsA("ParticleEmitter") then
+        if weatherEmitters[inst] == nil and looksLikeWeather(inst) then
+            weatherEmitters[inst] = inst.Enabled
+            inst.Enabled = false
+        end
+    elseif inst:IsA("Sound") then
+        if weatherSounds[inst] == nil and looksLikeWeather(inst) then
+            weatherSounds[inst] = inst.Volume
+            inst.Volume = 0
+        end
+    end
+end
+
+local function weatherTick()
+    local terrain = workspace:FindFirstChildOfClass("Terrain")
+    local cl = terrain and terrain:FindFirstChildOfClass("Clouds")
+    if cl then
+        if cloudsInst ~= cl then
+            cloudsInst = cl
+            cloudsWas = cl.Enabled
+        end
+        cl.Enabled = false
+    end
+    for inst in pairs(weatherEmitters) do
+        if not inst.Parent then
+            weatherEmitters[inst] = nil
+        elseif inst.Enabled then
+            inst.Enabled = false
+        end
+    end
+    for inst in pairs(weatherSounds) do
+        if not inst.Parent then
+            weatherSounds[inst] = nil
+        elseif inst.Volume ~= 0 then
+            inst.Volume = 0
+        end
+    end
+end
+
+local function setWeather(on)
+    weatherToken += 1
+    if weatherConn then weatherConn:Disconnect() weatherConn = nil end
+    if weatherLoop then weatherLoop:Disconnect() weatherLoop = nil end
+
+    if on then
+        local token = weatherToken
+        weatherConn = workspace.DescendantAdded:Connect(killWeather)
+
+        -- one-time scan, spread over several frames so it doesn't hitch
+        task.spawn(function()
+            local n = 0
+            for _, d in ipairs(workspace:GetDescendants()) do
+                if token ~= weatherToken then return end
+                killWeather(d)
+                n += 1
+                if n % 1500 == 0 then task.wait() end
+            end
+        end)
+
+        weatherTick()
+        local last = os.clock()
+        weatherLoop = RunService.Heartbeat:Connect(function()
+            local now = os.clock()
+            if now - last < 1 then return end
+            last = now
+            weatherTick()
+        end)
+    else
+        for inst, was in pairs(weatherEmitters) do
+            if inst.Parent then inst.Enabled = was end
+        end
+        table.clear(weatherEmitters)
+        for inst, vol in pairs(weatherSounds) do
+            if inst.Parent then inst.Volume = vol end
+        end
+        table.clear(weatherSounds)
+        if cloudsInst and cloudsInst.Parent then
+            cloudsInst.Enabled = cloudsWas
+        end
+        cloudsInst = nil
+    end
+end
+
+------------------------------------------------------------------
+-- GUI framework
+------------------------------------------------------------------
+local BG = Color3.fromRGB(17, 18, 23)
+local HEADER = Color3.fromRGB(12, 13, 17)
+local ROW = Color3.fromRGB(24, 26, 33)
+local SUB = Color3.fromRGB(19, 20, 26)
+local TEXT = Color3.fromRGB(228, 231, 238)
+local DIM = Color3.fromRGB(135, 140, 155)
+local FONT = Enum.Font.GothamMedium
+local FONTB = Enum.Font.GothamBold
+
+local function corner(inst, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r)
+    c.Parent = inst
+end
+
+local function vlist(parent)
+    local l = Instance.new("UIListLayout")
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Parent = parent
+    return l
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "VisualClient"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.DisplayOrder = 100
+gui.Parent = player:WaitForChild("PlayerGui")
+
+-- HUD: watermark
+local watermark = Instance.new("TextLabel")
+watermark.Name = "Watermark"
+watermark.Position = UDim2.fromOffset(8, 8)
+watermark.Size = UDim2.fromOffset(0, 26)
+watermark.AutomaticSize = Enum.AutomaticSize.X
+watermark.BackgroundColor3 = BG
+watermark.BackgroundTransparency = 0.25
+watermark.BorderSizePixel = 0
+watermark.RichText = true
+watermark.Font = FONTB
+watermark.TextSize = 16
+watermark.TextColor3 = TEXT
+watermark.Parent = gui
+corner(watermark, 4)
+onAccent(function(c)
+    watermark.Text = '  Visual<font color="#' .. c:ToHex() .. '">Client</font>  '
 end)
 
--- FPS-friendly effects toggle
-module("FPS Boost", function(on)
+-- HUD: module list (top right)
+local arrayFrame = Instance.new("Frame")
+arrayFrame.Name = "ArrayList"
+arrayFrame.AnchorPoint = Vector2.new(1, 0)
+arrayFrame.Position = UDim2.new(1, -8, 0, 8)
+arrayFrame.Size = UDim2.fromOffset(240, 0)
+arrayFrame.AutomaticSize = Enum.AutomaticSize.Y
+arrayFrame.BackgroundTransparency = 1
+arrayFrame.Parent = gui
+do
+    local l = vlist(arrayFrame)
+    l.HorizontalAlignment = Enum.HorizontalAlignment.Right
+    l.Padding = UDim.new(0, 2)
+end
+
+local function refreshArray()
+    for _, c in ipairs(arrayFrame:GetChildren()) do
+        if c:IsA("TextLabel") then c:Destroy() end
+    end
+    local names = {}
+    for _, m in ipairs(modules) do
+        if m.enabled and not m.hidden then table.insert(names, m.name) end
+    end
+    table.sort(names, function(a, b) return #a > #b end)
+    for i, n in ipairs(names) do
+        local l = Instance.new("TextLabel")
+        l.LayoutOrder = i
+        l.Size = UDim2.fromOffset(0, 20)
+        l.AutomaticSize = Enum.AutomaticSize.X
+        l.BackgroundColor3 = BG
+        l.BackgroundTransparency = 0.3
+        l.BorderSizePixel = 0
+        l.Font = FONT
+        l.TextSize = 14
+        l.TextColor3 = accent
+        l.TextXAlignment = Enum.TextXAlignment.Right
+        l.Text = "  " .. n .. "   "
+        l.Parent = arrayFrame
+
+        local bar = Instance.new("Frame")
+        bar.AnchorPoint = Vector2.new(1, 0)
+        bar.Position = UDim2.new(1, 0, 0, 0)
+        bar.Size = UDim2.new(0, 2, 1, 0)
+        bar.BackgroundColor3 = accent
+        bar.BorderSizePixel = 0
+        bar.Parent = l
+    end
+end
+onAccent(function() refreshArray() end)
+
+-- Click GUI root
+local clickGui = Instance.new("Frame")
+clickGui.Name = "ClickGui"
+clickGui.Size = UDim2.fromScale(1, 1)
+clickGui.BackgroundColor3 = Color3.new(0, 0, 0)
+clickGui.BackgroundTransparency = 0.6
+clickGui.BorderSizePixel = 0
+clickGui.Active = true
+clickGui.Parent = gui
+
+local hint = Instance.new("TextLabel")
+hint.AnchorPoint = Vector2.new(0.5, 1)
+hint.Position = UDim2.new(0.5, 0, 1, -14)
+hint.Size = UDim2.fromOffset(500, 20)
+hint.BackgroundTransparency = 1
+hint.Font = FONT
+hint.TextSize = 13
+hint.TextColor3 = DIM
+hint.Parent = clickGui
+
+-- Drag / slider state (handled by the global input events below)
+local dragTarget, dragStartMouse, dragStartPos
+local activeSlider
+
+local function styleButton(b)
+    b.BackgroundColor3 = ROW
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.Font = FONT
+    b.TextSize = 13
+    b.TextColor3 = DIM
+    b.TextXAlignment = Enum.TextXAlignment.Left
+end
+
+local function makePanel(title, x)
+    local panel = Instance.new("Frame")
+    panel.Name = title
+    panel.Size = UDim2.fromOffset(185, 0)
+    panel.AutomaticSize = Enum.AutomaticSize.Y
+    panel.Position = UDim2.fromOffset(x, 80)
+    panel.BackgroundColor3 = BG
+    panel.BorderSizePixel = 0
+    panel.ClipsDescendants = true
+    panel.Parent = clickGui
+    corner(panel, 6)
+    vlist(panel)
+
+    local header = Instance.new("TextButton")
+    header.LayoutOrder = 0
+    header.Size = UDim2.new(1, 0, 0, 32)
+    header.BackgroundColor3 = HEADER
+    header.BorderSizePixel = 0
+    header.AutoButtonColor = false
+    header.Font = FONTB
+    header.TextSize = 14
+    header.TextColor3 = TEXT
+    header.Text = string.upper(title)
+    header.Parent = panel
+
+    local line = Instance.new("Frame")
+    line.AnchorPoint = Vector2.new(0, 1)
+    line.Position = UDim2.new(0, 0, 1, 0)
+    line.Size = UDim2.new(1, 0, 0, 2)
+    line.BorderSizePixel = 0
+    line.Parent = header
+    onAccent(function(c) line.BackgroundColor3 = c end)
+
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragTarget = panel
+            dragStartMouse = input.Position
+            dragStartPos = panel.Position
+        end
+    end)
+
+    return {frame = panel, n = 0}
+end
+
+local function nextOrder(panel)
+    panel.n += 1
+    return panel.n
+end
+
+-- Cycle widget: click to step through options
+local function addCycle(parent, label, options, start, onChange)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, 0, 0, 24)
+    styleButton(b)
+    b.BackgroundColor3 = SUB
+    b.TextSize = 12
+    local idx = start
+    local function refresh()
+        b.Text = "      " .. label .. ":  " .. options[idx]
+    end
+    refresh()
+    b.MouseButton1Click:Connect(function()
+        idx = idx % #options + 1
+        refresh()
+        onChange(idx)
+    end)
+    b.Parent = parent
+    return {
+        button = b,
+        set = function(i)
+            idx = i
+            refresh()
+        end,
+    }
+end
+
+-- Slider widget
+local function addSlider(parent, label, minV, maxV, value, step, onChange)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 34)
+    f.BackgroundColor3 = SUB
+    f.BorderSizePixel = 0
+
+    local t = Instance.new("TextLabel")
+    t.Position = UDim2.fromOffset(18, 3)
+    t.Size = UDim2.new(1, -24, 0, 16)
+    t.BackgroundTransparency = 1
+    t.Font = FONT
+    t.TextSize = 12
+    t.TextColor3 = DIM
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.Parent = f
+
+    local track = Instance.new("Frame")
+    track.Position = UDim2.fromOffset(18, 24)
+    track.Size = UDim2.new(1, -36, 0, 4)
+    track.BackgroundColor3 = Color3.fromRGB(45, 48, 58)
+    track.BorderSizePixel = 0
+    track.Parent = f
+    corner(track, 2)
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BorderSizePixel = 0
+    fill.Parent = track
+    corner(fill, 2)
+    onAccent(function(c) fill.BackgroundColor3 = c end)
+
+    local function show(v)
+        local pct = (v - minV) / (maxV - minV)
+        fill.Size = UDim2.new(pct, 0, 1, 0)
+        t.Text = label .. ": " .. string.format("%g", v)
+    end
+    show(value)
+
+    local function setFromX(x)
+        local pct = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+        local v = minV + pct * (maxV - minV)
+        v = math.floor(v / step + 0.5) * step
+        v = math.clamp(v, minV, maxV)
+        show(v)
+        onChange(v)
+    end
+
+    f.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            activeSlider = setFromX
+            setFromX(input.Position.X)
+        end
+    end)
+
+    f.Parent = parent
+    return f
+end
+
+-- Module row (left-click toggle, right-click settings)
+local function addModule(panel, name, onToggle)
+    local mod = {name = name, enabled = false}
+
+    local holder = Instance.new("Frame")
+    holder.LayoutOrder = nextOrder(panel)
+    holder.Size = UDim2.new(1, 0, 0, 0)
+    holder.AutomaticSize = Enum.AutomaticSize.Y
+    holder.BackgroundTransparency = 1
+    holder.Parent = panel.frame
+    vlist(holder)
+
+    local btn = Instance.new("TextButton")
+    btn.LayoutOrder = 0
+    btn.Size = UDim2.new(1, 0, 0, 28)
+    styleButton(btn)
+    btn.Text = "   " .. name
+    btn.Parent = holder
+
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(0, 3, 1, 0)
+    bar.BorderSizePixel = 0
+    bar.Visible = false
+    bar.Parent = btn
+
+    local settings = Instance.new("Frame")
+    settings.LayoutOrder = 1
+    settings.Size = UDim2.new(1, 0, 0, 0)
+    settings.AutomaticSize = Enum.AutomaticSize.Y
+    settings.BackgroundColor3 = SUB
+    settings.BorderSizePixel = 0
+    settings.Visible = false
+    settings.Parent = holder
+    vlist(settings)
+
+    local arrow
+    local function markSettings()
+        if mod.hasSettings then return end
+        mod.hasSettings = true
+        arrow = Instance.new("TextLabel")
+        arrow.AnchorPoint = Vector2.new(1, 0)
+        arrow.Position = UDim2.new(1, -6, 0, 0)
+        arrow.Size = UDim2.fromOffset(20, 28)
+        arrow.BackgroundTransparency = 1
+        arrow.Font = FONTB
+        arrow.TextSize = 14
+        arrow.TextColor3 = DIM
+        arrow.Text = "+"
+        arrow.Parent = btn
+    end
+
+    local function refresh()
+        btn.TextColor3 = mod.enabled and accent or DIM
+        bar.Visible = mod.enabled
+        bar.BackgroundColor3 = accent
+    end
+
+    function mod.set(on)
+        if mod.enabled == on then return end
+        mod.enabled = on
+        refresh()
+        local ok, err = pcall(onToggle, on)
+        if not ok then
+            warn("[VisualClient] " .. name .. ": " .. tostring(err))
+        end
+        refreshArray()
+    end
+
+    function mod.cycle(label, options, start, onChange)
+        markSettings()
+        return addCycle(settings, label, options, start, onChange)
+    end
+
+    function mod.slider(label, minV, maxV, value, step, onChange)
+        markSettings()
+        return addSlider(settings, label, minV, maxV, value, step, onChange)
+    end
+
+    btn.MouseButton1Click:Connect(function() mod.set(not mod.enabled) end)
+    btn.MouseButton2Click:Connect(function()
+        if mod.hasSettings then
+            settings.Visible = not settings.Visible
+            arrow.Text = settings.Visible and "-" or "+"
+        end
+    end)
+
+    onAccent(function() refresh() end)
+    table.insert(modules, mod)
+    return mod
+end
+
+-- Plain action row (not a toggle)
+local function addAction(panel, text, callback)
+    local b = Instance.new("TextButton")
+    b.LayoutOrder = nextOrder(panel)
+    b.Size = UDim2.new(1, 0, 0, 28)
+    styleButton(b)
+    b.TextColor3 = TEXT
+    b.Text = "   " .. text
+    b.MouseButton1Click:Connect(callback)
+    b.Parent = panel.frame
+    return b
+end
+
+-- Keeps every Color widget showing the same value
+local colorWidgets = {}
+onAccent(function()
+    for _, w in ipairs(colorWidgets) do w.set(accentIndex) end
+end)
+
+------------------------------------------------------------------
+-- Panels and modules
+------------------------------------------------------------------
+
+-- VISUAL
+local visualPanel = makePanel("Visual", 30)
+
+local hatMod = addModule(visualPanel, "China Hat", function(on)
     if on then
-        table.clear(originalEffects)
-        for _, obj in ipairs(Lighting:GetDescendants()) do
-            if obj:IsA("PostEffect") then
-                originalEffects[obj] = obj.Enabled
-                obj.Enabled = false
-            end
-        end
+        local ch = player.Character
+        if ch then addHat(ch) end
     else
-        for obj, wasEnabled in pairs(originalEffects) do
-            if obj and obj.Parent then
-                obj.Enabled = wasEnabled
-            end
-        end
-        table.clear(originalEffects)
+        removeHat()
+    end
+end)
+table.insert(colorWidgets, hatMod.cycle("Color", presetNames, accentIndex, setAccentIndex))
+hatMod.slider("Size", 0.6, 1.8, 1, 0.05, function(v)
+    hatScale = v
+    applyHatScale()
+end)
+
+local wingMod = addModule(visualPanel, "Wings", function(on)
+    if on then
+        local ch = player.Character
+        if ch then addWings(ch) end
+    else
+        removeWings()
+    end
+end)
+wingMod.slider("Flap Speed", 0, 8, 3, 0.5, function(v) wingSpeed = v end)
+
+local trailMod = addModule(visualPanel, "Player Trails", function(on)
+    if on then
+        local ch = player.Character
+        if ch then addTrail(ch) end
+    else
+        removeTrail()
+    end
+end)
+trailMod.slider("Length", 0.2, 2, 0.65, 0.05, function(v)
+    trailLifetime = v
+    if activeTrail then activeTrail.Lifetime = v end
+end)
+
+-- RENDER
+local renderPanel = makePanel("Render", 225)
+
+local fovValue = math.floor(oldFOV + 0.5)
+local fovMod = addModule(renderPanel, "FOV", function(on)
+    pcall(function() RunService:UnbindFromRenderStep("VisualClientFOV") end)
+    if on then
+        RunService:BindToRenderStep("VisualClientFOV",
+            Enum.RenderPriority.Camera.Value + 1, function()
+                local c = cam()
+                if c and math.abs(c.FieldOfView - fovValue) > 0.05 then
+                    c.FieldOfView = fovValue
+                end
+            end)
+    else
+        local c = cam()
+        if c then c.FieldOfView = oldFOV end
+    end
+end)
+fovMod.slider("Value", 40, 120, fovValue, 1, function(v) fovValue = v end)
+
+addModule(renderPanel, "Fullbright", function(on)
+    if on then
+        Lighting.Brightness = 3
+        Lighting.Ambient = Color3.fromRGB(180, 180, 180)
+        Lighting.OutdoorAmbient = Color3.fromRGB(180, 180, 180)
+    else
+        Lighting.Brightness = oldLighting.Brightness
+        Lighting.Ambient = oldLighting.Ambient
+        Lighting.OutdoorAmbient = oldLighting.OutdoorAmbient
     end
 end)
 
--- Color correction
 local correction = Instance.new("ColorCorrectionEffect")
 correction.Name = "VisualClientColor"
 correction.Enabled = false
@@ -442,72 +915,198 @@ correction.Saturation = 0.15
 correction.Contrast = 0.05
 correction.Parent = Lighting
 
-module("Color Effects", function(on)
+addModule(renderPanel, "Color Effects", function(on)
     correction.Enabled = on
 end)
 
--- Blur toggle (not true motion blur)
 local blur = Instance.new("BlurEffect")
 blur.Name = "VisualClientBlur"
 blur.Size = 8
 blur.Enabled = false
 blur.Parent = Lighting
 
-module("Blur Effect", function(on)
+local blurMod = addModule(renderPanel, "Blur Effect", function(on)
     blur.Enabled = on
 end)
+blurMod.slider("Size", 2, 24, 8, 1, function(v) blur.Size = v end)
 
--- Crosshair (parented to the ScreenGui, so it stays visible when the menu is hidden)
+local originalEffects = {}
+addModule(renderPanel, "FPS Boost", function(on)
+    if on then
+        table.clear(originalEffects)
+        for _, obj in ipairs(Lighting:GetDescendants()) do
+            if obj:IsA("PostEffect") and obj ~= correction and obj ~= blur then
+                originalEffects[obj] = obj.Enabled
+                obj.Enabled = false
+            end
+        end
+    else
+        for obj, wasEnabled in pairs(originalEffects) do
+            if obj and obj.Parent then obj.Enabled = wasEnabled end
+        end
+        table.clear(originalEffects)
+    end
+end)
+
 local cross = Instance.new("TextLabel")
 cross.Name = "VisualCrosshair"
 cross.Size = UDim2.fromOffset(30, 30)
-cross.Position = UDim2.new(0.5, -15, 0.5, -15)
+cross.AnchorPoint = Vector2.new(0.5, 0.5)
+cross.Position = UDim2.fromScale(0.5, 0.5)
 cross.BackgroundTransparency = 1
 cross.Text = "+"
-cross.TextColor3 = Color3.fromRGB(80, 255, 170)
 cross.TextSize = 24
-cross.Font = Enum.Font.GothamBold
+cross.Font = FONTB
 cross.Visible = false
 cross.Parent = gui
+onAccent(function(c) cross.TextColor3 = c end)
 
-module("Custom Crosshair", function(on)
+addModule(renderPanel, "Crosshair", function(on)
     cross.Visible = on
 end)
 
--- Keep cosmetics after respawn
-table.insert(connections, player.CharacterAdded:Connect(function(character)
-    character:WaitForChild("Head")
-    character:WaitForChild("HumanoidRootPart")
-    if enabled["China Hat"] then addHat(character) end
-    if enabled["Player Trails"] then addTrail(character) end
+-- WORLD
+local worldPanel = makePanel("World", 420)
+
+addModule(worldPanel, "Remove Fog", setFog)
+addModule(worldPanel, "Remove Weather", setWeather)
+
+local timeValue = 14
+local timeBefore = Lighting.ClockTime
+local timeConn
+local timeMod = addModule(worldPanel, "Time Changer", function(on)
+    if timeConn then
+        timeConn:Disconnect()
+        timeConn = nil
+    end
+    if on then
+        timeBefore = Lighting.ClockTime
+        Lighting.ClockTime = timeValue
+        timeConn = RunService.Heartbeat:Connect(function()
+            if math.abs(Lighting.ClockTime - timeValue) > 0.01 then
+                Lighting.ClockTime = timeValue
+            end
+        end)
+    else
+        Lighting.ClockTime = timeBefore
+    end
+end)
+timeMod.slider("Hour", 0, 23.5, 14, 0.5, function(v) timeValue = v end)
+
+-- CLIENT
+local clientPanel = makePanel("Client", 615)
+
+do
+    local w = addCycle(clientPanel.frame, "Theme Color", presetNames, accentIndex, setAccentIndex)
+    w.button.LayoutOrder = nextOrder(clientPanel)
+    table.insert(colorWidgets, w)
+end
+
+local menuKey = Enum.KeyCode.RightShift
+local binding = false
+local keyBtn
+
+local function updateKeyUi()
+    if binding then
+        keyBtn.Text = "   Press a key...  (Esc cancels)"
+    else
+        keyBtn.Text = "   Menu Key:  " .. menuKey.Name
+    end
+    hint.Text = "Left-click: toggle  |  Right-click: settings  |  "
+        .. menuKey.Name .. ": hide/show menu"
+end
+
+keyBtn = addAction(clientPanel, "", function()
+    binding = true
+    updateKeyUi()
+end)
+updateKeyUi()
+
+local arrayMod = addModule(clientPanel, "ArrayList", function(on)
+    arrayFrame.Visible = on
+end)
+arrayMod.hidden = true
+arrayMod.set(true)
+
+------------------------------------------------------------------
+-- Input handling
+------------------------------------------------------------------
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
+    if binding then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            if input.KeyCode ~= Enum.KeyCode.Escape then
+                menuKey = input.KeyCode
+            end
+            binding = false
+            updateKeyUi()
+        end
+        return
+    end
+
+    if processed then return end
+    if input.KeyCode == menuKey then
+        clickGui.Visible = not clickGui.Visible
+    end
 end))
 
--- Restore everything and remove the client
+table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+    local moving = input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    if not moving then return end
+
+    if dragTarget then
+        local delta = input.Position - dragStartMouse
+        dragTarget.Position = UDim2.fromOffset(
+            dragStartPos.X.Offset + delta.X,
+            dragStartPos.Y.Offset + delta.Y
+        )
+    elseif activeSlider then
+        activeSlider(input.Position.X)
+    end
+end))
+
+table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragTarget = nil
+        activeSlider = nil
+    end
+end))
+
+-- Keep cosmetics after respawn
+table.insert(connections, player.CharacterAdded:Connect(function(character)
+    local hum = character:WaitForChild("Humanoid", 5)
+    character:WaitForChild("Head", 5)
+    character:WaitForChild("HumanoidRootPart", 5)
+    if hum then
+        character:WaitForChild(
+            hum.RigType == Enum.HumanoidRigType.R15 and "UpperTorso" or "Torso", 5)
+    end
+    if hatMod.enabled then addHat(character) end
+    if trailMod.enabled then addTrail(character) end
+    if wingMod.enabled then addWings(character) end
+end))
+
+------------------------------------------------------------------
+-- Unload
+------------------------------------------------------------------
 local function cleanup()
-    for _, fn in ipairs(resetFns) do
-        pcall(fn)
+    for i = #modules, 1, -1 do
+        local m = modules[i]
+        if m.enabled then pcall(m.set, false) end
     end
-    if fogConn then fogConn:Disconnect() fogConn = nil end
-    for _, c in ipairs(connections) do
-        c:Disconnect()
-    end
+    for _, c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
+    pcall(function() RunService:UnbindFromRenderStep("VisualClientFOV") end)
 
     removeHat()
     removeTrail()
-    camera.FieldOfView = oldFOV
-    Lighting.Brightness = oldLighting.Brightness
-    Lighting.ClockTime = oldLighting.ClockTime
-    Lighting.Ambient = oldLighting.Ambient
-    Lighting.OutdoorAmbient = oldLighting.OutdoorAmbient
-    Lighting.GlobalShadows = oldLighting.GlobalShadows
-    Lighting.FogStart = oldLighting.FogStart
-    Lighting.FogEnd = oldLighting.FogEnd
+    removeWings()
     correction:Destroy()
     blur:Destroy()
     gui:Destroy()
 end
 
-button("Unload Client", cleanup)
+addAction(clientPanel, "Unload Client", cleanup)
 
 print("Visual Client loaded. Press " .. menuKey.Name .. " to hide/show the menu.")
