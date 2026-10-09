@@ -88,7 +88,7 @@ end
 ------------------------------------------------------------------
 local canFile = type(writefile) == "function"
     and type(readfile) == "function"
-    and type(isfile) == "function"
+local canCheckFile = type(isfile) == "function"
 local canFolder = canFile
     and type(makefolder) == "function"
     and type(isfolder) == "function"
@@ -97,6 +97,8 @@ local configEntries = {}
 local panelRegistry = {}
 local configLoading = false
 local saveConfig -- assigned in the config section near the end
+local notifyConfig -- assigned alongside config UI feedback
+local chatConfigConnection
 local saveQueued = false
 
 local function registerConfig(key, get, set)
@@ -108,7 +110,12 @@ local function requestSave()
     saveQueued = true
     task.delay(1, function()
         saveQueued = false
-        if not configLoading and saveConfig then saveConfig() end
+        if not configLoading and saveConfig then
+            local ok = saveConfig()
+            if not ok then
+                notifyConfig("Auto-save failed — file access unavailable", true)
+            end
+        end
     end)
 end
 
@@ -2426,7 +2433,8 @@ local function applyModuleSearch(text)
         if matches then panelHasMatch[m.panel] = true end
     end
     for title, panel in pairs(panelRegistry) do
-        if title ~= "Client" then
+        -- Config controls are utility controls, not searchable modules.
+        if title ~= "Client" and title ~= "Config" then
             panel.Visible = query == "" or panelHasMatch[panel] == true
         end
     end
@@ -2586,6 +2594,10 @@ end))
 -- Unload
 ------------------------------------------------------------------
 local function cleanup()
+    if chatConfigConnection then
+        pcall(function() chatConfigConnection:Disconnect() end)
+        chatConfigConnection = nil
+    end
     -- save the current state first, then stop auto-saving while modules switch off
     if saveConfig then saveConfig() end
     configLoading = true
@@ -2647,11 +2659,21 @@ local function readConfig(profileName)
     local profile = normalizeProfileName(profileName or currentProfile)
     if profile == "" then return nil end
     local path = profilePath(profile)
-    if profile == "default" and canFile and not isfile(path) then
-        local legacyPath = canFolder and "VisualClient/config.json" or "VisualClientConfig.json"
-        if isfile(legacyPath) then path = legacyPath end
+    if not canFile then return nil end
+    if canCheckFile then
+        local existsOk, exists = pcall(isfile, path)
+        if profile == "default" and (not existsOk or not exists) then
+            local legacyPath = canFolder and "VisualClient/config.json" or "VisualClientConfig.json"
+            local legacyOk, legacyExists = pcall(isfile, legacyPath)
+            if legacyOk and legacyExists then
+                path = legacyPath
+            elseif existsOk and not exists then
+                return nil
+            end
+        elseif existsOk and not exists then
+            return nil
+        end
     end
-    if not canFile or not isfile(path) then return nil end
     local ok, data = pcall(function()
         return HttpService:JSONDecode(readfile(path))
     end)
@@ -2673,6 +2695,10 @@ saveConfig = function(profileName)
         modules = {},
         values = {},
         panels = {},
+        statsPosition = {
+            x = statsFrame.Position.X.Offset,
+            y = statsFrame.Position.Y.Offset,
+        },
     }
     for _, m in ipairs(modules) do
         data.modules[m.name] = m.enabled
@@ -2682,15 +2708,23 @@ saveConfig = function(profileName)
         if ok then data.values[key] = v end
     end
     for title, panel in pairs(panelRegistry) do
-        data.panels[title] = {
-            x = panel.Position.X.Offset,
-            y = panel.Position.Y.Offset,
-        }
+        -- Keep Config aligned to the current screen edge instead of restoring
+        -- a stale pixel coordinate from another screen resolution.
+        if title ~= "Config" then
+            data.panels[title] = {
+                x = panel.Position.X.Offset,
+                y = panel.Position.Y.Offset,
+            }
+        end
     end
 
     local ok = pcall(function()
-        if canFolder and not isfolder("TrueSight") then
-            makefolder("TrueSight")
+        if canFolder then
+            local folderExists = false
+            pcall(function() folderExists = isfolder("TrueSight") end)
+            if not folderExists then
+                pcall(makefolder, "TrueSight")
+            end
         end
         writefile(path, HttpService:JSONEncode(data))
     end)
@@ -2723,11 +2757,20 @@ local function applyConfig(data)
     if type(data.panels) == "table" then
         for title, pos in pairs(data.panels) do
             local panel = panelRegistry[title]
-            if panel and type(pos) == "table"
+            if title ~= "Config" and panel and type(pos) == "table"
                 and type(pos.x) == "number" and type(pos.y) == "number" then
                 panel.Position = UDim2.fromOffset(pos.x, pos.y)
             end
         end
+    end
+
+    -- FPS and Ping share one draggable Stats frame, so one saved position
+    -- restores both trackers together.
+    if type(data.statsPosition) == "table"
+        and type(data.statsPosition.x) == "number"
+        and type(data.statsPosition.y) == "number" then
+        statsFrame.Position = UDim2.fromOffset(
+            data.statsPosition.x, data.statsPosition.y)
     end
 
     if type(data.modules) == "table" then
@@ -2744,6 +2787,49 @@ local function applyConfig(data)
     configLoading = false
 end
 
+-- Persistent on-screen feedback for config commands and saves.
+local configNotice
+local configNoticeToken = 0
+
+notifyConfig = function(message, isError)
+    if not gui or not gui.Parent then
+        if isError then warn("[TrueSight] " .. message) else print("[TrueSight] " .. message) end
+        return
+    end
+
+    if not configNotice or not configNotice.Parent then
+        configNotice = Instance.new("TextLabel")
+        configNotice.Name = "ConfigNotice"
+        configNotice.AnchorPoint = Vector2.new(0.5, 0)
+        configNotice.Position = UDim2.new(0.5, 0, 0, 12)
+        configNotice.Size = UDim2.fromOffset(300, 30)
+        configNotice.BackgroundColor3 = BG
+        configNotice.BackgroundTransparency = 0.08
+        configNotice.BorderSizePixel = 0
+        configNotice.Font = FONTB
+        configNotice.TextSize = 13
+        configNotice.TextColor3 = TEXT
+        configNotice.TextWrapped = true
+        configNotice.ZIndex = 100
+        configNotice.Parent = gui
+        corner(configNotice, 6)
+        local stroke = Instance.new("UIStroke")
+        stroke.Thickness = 1
+        stroke.Parent = configNotice
+    end
+
+    configNoticeToken += 1
+    local token = configNoticeToken
+    configNotice.Text = "  " .. message .. "  "
+    configNotice.TextColor3 = isError and BAD or GOOD
+    configNotice.Visible = true
+    task.delay(2.5, function()
+        if configNotice and configNotice.Parent and configNoticeToken == token then
+            configNotice.Visible = false
+        end
+    end)
+end
+
 local function flash(btn, text, base)
     btn.Text = "   " .. text
     task.delay(1.5, function()
@@ -2751,30 +2837,39 @@ local function flash(btn, text, base)
     end)
 end
 
+-- A separate Config panel keeps save/load controls visible regardless of the
+-- number of Client options or whether the Client panel is obscured/off-screen.
+local viewportWidth = (cam() and cam().ViewportSize.X) or clickGui.AbsoluteSize.X
+local configPanel = makePanel("Config", math.max(8, viewportWidth - 197))
+
 local saveBtn
-saveBtn = addAction(clientPanel, "Save Config", function()
+saveBtn = addAction(configPanel, "Save Config", function()
     if not canFile then
         flash(saveBtn, "No file access here", "Save Config")
     elseif saveConfig() then
         flash(saveBtn, "Saved!", "Save Config")
+        notifyConfig("Config saved", false)
     else
         flash(saveBtn, "Save failed", "Save Config")
     end
 end)
+saveBtn.LayoutOrder = 1
 
 local loadBtn
-loadBtn = addAction(clientPanel, "Load Config", function()
+loadBtn = addAction(configPanel, "Load Config", function()
     local data = readConfig()
     if data then
         applyConfig(data)
         flash(loadBtn, "Loaded!", "Load Config")
+        notifyConfig("Config loaded", false)
     else
         flash(loadBtn, canFile and "No saved config" or "No file access here", "Load Config")
     end
 end)
+loadBtn.LayoutOrder = 2
 
 local profileInput
-profileInput = addTextInput(clientPanel, "Config Profile",
+profileInput = addTextInput(configPanel, "Config Profile",
     "Profile name (letters, numbers, _ or -)...", "default", function(value)
         local safe = normalizeProfileName(value)
         if safe ~= "" then
@@ -2782,28 +2877,61 @@ profileInput = addTextInput(clientPanel, "Config Profile",
             currentProfile = safe
         end
     end)
+profileInput.LayoutOrder = 3
 local saveProfileBtn
-saveProfileBtn = addAction(clientPanel, "Save Profile", function()
+saveProfileBtn = addAction(configPanel, "Save Profile", function()
     local profile = normalizeProfileName(profileInput.Text)
     if profile == "" then
         flash(saveProfileBtn, "Enter a profile name", "Save Profile")
     elseif saveConfig(profile) then
         flash(saveProfileBtn, "Saved " .. profile, "Save Profile")
+        notifyConfig("Config saved (" .. profile .. ")", false)
     else
         flash(saveProfileBtn, "Save failed", "Save Profile")
     end
 end)
+saveProfileBtn.LayoutOrder = 4
 local loadProfileBtn
-loadProfileBtn = addAction(clientPanel, "Load Profile", function()
+loadProfileBtn = addAction(configPanel, "Load Profile", function()
     local profile = normalizeProfileName(profileInput.Text)
     local data = profile ~= "" and readConfig(profile) or nil
     if data then
         currentProfile = profile
         applyConfig(data)
         flash(loadProfileBtn, "Loaded " .. profile, "Load Profile")
+        notifyConfig("Config loaded (" .. profile .. ")", false)
     else
         flash(loadProfileBtn, "Profile not found", "Load Profile")
     end
+end)
+loadProfileBtn.LayoutOrder = 5
+
+-- Chat shortcuts: /config save, /config load, /config save <profile>,
+-- /config load <profile>. Chat messages are handled locally by this script.
+pcall(function()
+    chatConfigConnection = player.Chatted:Connect(function(message)
+        local command, profile = string.match(message, "^%s*/config%s+(%S+)%s*(.-)%s*$")
+        if not command then return end
+        command = string.lower(command)
+        profile = normalizeProfileName(profile)
+        if command == "save" then
+            local ok = saveConfig(profile ~= "" and profile or nil)
+            if ok then
+                notifyConfig("Config saved" .. (profile ~= "" and (" (" .. profile .. ")") or ""), false)
+            else
+                notifyConfig("Config save failed — check executor file access", true)
+            end
+        elseif command == "load" then
+            local data = readConfig(profile ~= "" and profile or nil)
+            if data then
+                currentProfile = profile ~= "" and profile or "default"
+                applyConfig(data)
+                notifyConfig("Config loaded" .. (profile ~= "" and (" (" .. profile .. ")") or ""), false)
+            else
+                notifyConfig("No saved config found" .. (profile ~= "" and (" for " .. profile) or ""), true)
+            end
+        end
+    end)
 end)
 
 addAction(clientPanel, "Unload Client", cleanup)
