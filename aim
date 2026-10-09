@@ -828,7 +828,7 @@ local function addGhost()
     box.LineThickness = 0.04
     box.Color3 = accent
     box.SurfaceColor3 = accent
-    box.SurfaceTransparency = 0.9
+    box.SurfaceTransparency = 1
     box.Visible = false
     box.Parent = part
 
@@ -891,9 +891,10 @@ local function addGhost()
 
         part.CFrame = est * CFrame.new(0, -0.35, 0)
         -- Style 1 = Chams, 2 = Box only, 3 = Both.
-        box.Visible = ghostAvatar.style >= 2
+        -- The proxy box is outline-only and is never shown in Chams mode.
+        box.Visible = (ghostAvatar.style == 2 or ghostAvatar.style == 3)
         if ghostAvatar.highlight then
-            ghostAvatar.highlight.Enabled = ghostAvatar.style ~= 2
+            ghostAvatar.highlight.Enabled = (ghostAvatar.style == 1 or ghostAvatar.style == 3)
         end
         for _, pair in ipairs(ghostAvatar.parts) do
             if pair.ghost and pair.ghost.Parent then
@@ -1969,7 +1970,8 @@ ghostMod.cycle("Style", {"Chams", "Box", "Both"}, 1, function(i)
         ghostAvatar.highlight.Enabled = i ~= 2
     end
     if ghostBox then
-        ghostBox.Visible = i >= 2
+        ghostBox.Visible = (i == 2 or i == 3)
+        ghostBox.SurfaceTransparency = 1
     end
     -- Hide the cloned body completely in Box-only mode; otherwise the
     -- ForceField cham itself would still show behind the box.
