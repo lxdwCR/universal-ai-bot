@@ -1,4 +1,4 @@
--- VISUAL CLIENT | LocalScript
+-- TRUESIGHT | client-side visual script
 -- Cosmetic and visual modules only.
 --
 -- Controls:
@@ -14,6 +14,7 @@ local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local TeleportService = game:GetService("TeleportService")
 local Debris = game:GetService("Debris")
 local HttpService = game:GetService("HttpService")
 local Stats = game:GetService("Stats")
@@ -24,16 +25,16 @@ local function cam() return workspace.CurrentCamera end
 -- Remove leftovers from an earlier run of this script
 do
     local pg = player:WaitForChild("PlayerGui")
-    local old = pg:FindFirstChild("VisualClient")
+    local old = pg:FindFirstChild("TrueSight")
     if old then old:Destroy() end
-    local oldFx = pg:FindFirstChild("VisualClientFX")
+    local oldFx = pg:FindFirstChild("TrueSightFX")
     if oldFx then oldFx:Destroy() end
     for _, e in ipairs(Lighting:GetChildren()) do
-        if string.find(e.Name, "^VisualClient") then
+        if string.find(e.Name, "^TrueSight") then
             e:Destroy()
         end
     end
-    pcall(function() RunService:UnbindFromRenderStep("VisualClientFOV") end)
+    pcall(function() RunService:UnbindFromRenderStep("TrueSightFOV") end)
 end
 
 local oldFOV = cam().FieldOfView
@@ -41,6 +42,7 @@ local oldLighting = {
     Brightness = Lighting.Brightness,
     Ambient = Lighting.Ambient,
     OutdoorAmbient = Lighting.OutdoorAmbient,
+    FogColor = Lighting.FogColor,
     FogStart = Lighting.FogStart,
     FogEnd = Lighting.FogEnd,
 }
@@ -327,6 +329,18 @@ end)
 local auraObjects = {}
 local auraEmitter
 local auraRate = 22
+local auraStyle = 1
+local auraStyles = {
+    {name = "Sparkles", texture = "rbxasset://textures/particles/sparkles_main.dds",
+        speed = NumberRange.new(0.2, 0.8), acceleration = Vector3.new(0, 2.5, 0),
+        lifetime = NumberRange.new(1.2, 2), size = 0.5},
+    {name = "Embers", texture = "rbxasset://textures/particles/fire_main.dds",
+        speed = NumberRange.new(0.6, 1.8), acceleration = Vector3.new(0, 3.5, 0),
+        lifetime = NumberRange.new(0.8, 1.4), size = 0.7},
+    {name = "Soft Glow", texture = "rbxasset://textures/particles/flare_main.dds",
+        speed = NumberRange.new(0.1, 0.5), acceleration = Vector3.new(0, 1.2, 0),
+        lifetime = NumberRange.new(1.5, 2.4), size = 0.9},
+}
 
 local function auraColor(c)
     return ColorSequence.new(c, c:Lerp(Color3.new(1, 1, 1), 0.6))
@@ -365,20 +379,21 @@ local function addAura(character)
 
     local e = Instance.new("ParticleEmitter")
     e.Name = "LocalAuraEmitter"
-    e.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+    local style = auraStyles[auraStyle] or auraStyles[1]
+    e.Texture = style.texture
     e.Shape = Enum.ParticleEmitterShape.Sphere
     e.ShapeStyle = Enum.ParticleEmitterShapeStyle.Surface
     e.Rate = auraRate
-    e.Lifetime = NumberRange.new(1.2, 2)
-    e.Speed = NumberRange.new(0.2, 0.8)
-    e.Acceleration = Vector3.new(0, 2.5, 0)
+    e.Lifetime = style.lifetime
+    e.Speed = style.speed
+    e.Acceleration = style.acceleration
     e.Rotation = NumberRange.new(0, 360)
     e.RotSpeed = NumberRange.new(-60, 60)
     e.LightEmission = 1
     e.LightInfluence = 0
     e.Size = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.5),
-        NumberSequenceKeypoint.new(0.5, 0.35),
+        NumberSequenceKeypoint.new(0, style.size),
+        NumberSequenceKeypoint.new(0.5, style.size * 0.7),
         NumberSequenceKeypoint.new(1, 0),
     })
     e.Transparency = NumberSequence.new({
@@ -533,6 +548,109 @@ local function hookJump(character)
 end
 
 ------------------------------------------------------------------
+-- Verity: a lightweight local-only cosmetic companion
+------------------------------------------------------------------
+local verity = (function()
+local verityModel
+local verityBody
+local verityEyes = {}
+local verityMouth = {}
+local verityConn
+
+local function removeVerity()
+    if verityConn then
+        verityConn:Disconnect()
+        verityConn = nil
+    end
+    if verityModel and verityModel.Parent then verityModel:Destroy() end
+    verityModel, verityBody = nil, nil
+    table.clear(verityEyes)
+    table.clear(verityMouth)
+end
+
+local function addVerity()
+    removeVerity()
+    local model = Instance.new("Model")
+    model.Name = "TrueSightVerity"
+
+    local body = Instance.new("Part")
+    body.Name = "Body"
+    body.Shape = Enum.PartType.Ball
+    body.Size = Vector3.new(1.15, 1.15, 1.15)
+    body.Material = Enum.Material.Neon
+    body.Color = accent
+    body.Anchored = true
+    body.CanCollide = false
+    body.CanTouch = false
+    body.CanQuery = false
+    body.CastShadow = false
+    body.Parent = model
+    model.PrimaryPart = body
+
+    for i = -1, 1, 2 do
+        local eye = Instance.new("Part")
+        eye.Name = "Eye"
+        eye.Shape = Enum.PartType.Ball
+        eye.Size = Vector3.new(0.16, 0.19, 0.1)
+        eye.Material = Enum.Material.SmoothPlastic
+        eye.Color = Color3.fromRGB(20, 22, 28)
+        eye.Anchored = true
+        eye.CanCollide = false
+        eye.CanTouch = false
+        eye.CanQuery = false
+        eye.CastShadow = false
+        eye.Parent = model
+        table.insert(verityEyes, {part = eye, side = i})
+    end
+    for _, offset in ipairs({
+        Vector3.new(-0.12, -0.17, -0.59),
+        Vector3.new(0, -0.21, -0.59),
+        Vector3.new(0.12, -0.17, -0.59),
+    }) do
+        local mouthDot = Instance.new("Part")
+        mouthDot.Name = "Mouth"
+        mouthDot.Shape = Enum.PartType.Ball
+        mouthDot.Size = Vector3.new(0.07, 0.07, 0.06)
+        mouthDot.Material = Enum.Material.SmoothPlastic
+        mouthDot.Color = Color3.fromRGB(20, 22, 28)
+        mouthDot.Anchored = true
+        mouthDot.CanCollide = false
+        mouthDot.CanTouch = false
+        mouthDot.CanQuery = false
+        mouthDot.CastShadow = false
+        mouthDot.Parent = model
+        table.insert(verityMouth, {part = mouthDot, offset = offset})
+    end
+    model.Parent = workspace
+    verityModel, verityBody = model, body
+
+    verityConn = RunService.Heartbeat:Connect(function()
+        local character = player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        if not root or not verityBody or not verityBody.Parent then return end
+        local t = os.clock()
+        local cf = root.CFrame * CFrame.new(2.1, 1.1 + math.sin(t * 2.2) * 0.18, 2.6)
+            * CFrame.Angles(0, math.sin(t * 1.5) * 0.2, 0)
+        verityBody.CFrame = cf
+        for _, eye in ipairs(verityEyes) do
+            eye.part.CFrame = cf * CFrame.new(eye.side * 0.2, 0.12, -0.56)
+        end
+        for _, point in ipairs(verityMouth) do
+            point.part.CFrame = cf * CFrame.new(point.offset)
+        end
+    end)
+end
+
+onAccent(function(c)
+    if verityBody then verityBody.Color = c end
+end)
+return {
+    add = addVerity,
+    remove = removeVerity,
+}
+end)()
+
+------------------------------------------------------------------
 -- Desync tracker: an ESTIMATE of where the server currently sees you.
 -- A LocalScript cannot read the server's real value, so this shows your
 -- position as it was one network delay (ping / 2) ago.
@@ -547,6 +665,14 @@ local ghostPos = {}
 local ghostPing = 0
 local ghostLabelOn = true
 local ghostLastUi = 0
+local ghostAvatar = {
+    source = nil,
+    clone = nil,
+    highlight = nil,
+    parts = {},
+    size = Vector3.new(1.8, 4.2, 1.2),
+    style = 1,
+}
 
 local function getPing()
     local ok, v = pcall(function()
@@ -565,12 +691,126 @@ local function removeGhost()
     end
     if ghostPart and ghostPart.Parent then ghostPart:Destroy() end
     ghostPart, ghostGui, ghostLabel, ghostBox = nil, nil, nil, nil
+    if ghostAvatar.clone and ghostAvatar.clone.Parent then
+        ghostAvatar.clone:Destroy()
+    end
+    ghostAvatar.source = nil
+    ghostAvatar.clone = nil
+    ghostAvatar.highlight = nil
+    table.clear(ghostAvatar.parts)
     table.clear(ghostTimes)
     table.clear(ghostPos)
 end
 
+local function buildGhostAvatar(character)
+    local extents = character:GetExtentsSize()
+    ghostAvatar.size = Vector3.new(
+        math.clamp(extents.X * 0.75, 1.2, 2.1),
+        math.clamp(extents.Y * 0.85, 3.2, 4.7),
+        math.clamp(extents.Z * 0.75, 0.8, 1.4)
+    )
+    local wasArchivable = character.Archivable
+    local ok, clone = pcall(function()
+        character.Archivable = true
+        return character:Clone()
+    end)
+    character.Archivable = wasArchivable
+    if not ok or not clone then
+        ghostAvatar.source = character
+        warn("[TrueSight] Could not clone your character for Desync Box.")
+        return
+    end
+
+    clone.Name = "TrueSightDesyncChams"
+    table.clear(ghostAvatar.parts)
+
+    -- Pair parts by their hierarchy path instead of child-array index. Child
+    -- ordering can differ in a character clone, which can make the ghost map
+    -- the wrong source parts and appear stuck or malformed.
+    local function relativePath(root, inst)
+        local names = {}
+        local node = inst
+        while node and node ~= root do
+            table.insert(names, 1, node.Name)
+            node = node.Parent
+        end
+        return table.concat(names, "/")
+    end
+
+    local ghostByPath = {}
+    for _, obj in ipairs(clone:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            ghostByPath[relativePath(clone, obj)] = obj
+        end
+    end
+
+    for _, sourcePart in ipairs(character:GetDescendants()) do
+        if sourcePart:IsA("BasePart") then
+            local ghostPart = ghostByPath[relativePath(character, sourcePart)]
+            if ghostPart and ghostPart:IsA("BasePart") then
+                ghostPart.Anchored = true
+                ghostPart.CanCollide = false
+                ghostPart.CanTouch = false
+                ghostPart.CanQuery = false
+                ghostPart.CastShadow = false
+                ghostPart.LocalTransparencyModifier = 0
+                ghostPart.Material = Enum.Material.ForceField
+                ghostPart.Color = accent
+                ghostPart.Transparency = (ghostAvatar.style == 2) and 1 or 0.32
+                table.insert(ghostAvatar.parts, {
+                    source = sourcePart,
+                    ghost = ghostPart,
+                })
+            end
+        end
+    end
+
+    for _, obj in ipairs(clone:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            obj.Anchored = true
+            obj.CanCollide = false
+            obj.CanTouch = false
+            obj.CanQuery = false
+            obj.Massless = true
+            obj.CastShadow = false
+            obj.Material = Enum.Material.ForceField
+            obj.Color = accent
+            obj.Transparency = (ghostAvatar.style == 2) and 1 or 0.32
+        elseif obj:IsA("Decal") or obj:IsA("Texture")
+            or obj:IsA("SurfaceAppearance") then
+            obj:Destroy()
+        elseif obj:IsA("JointInstance") or obj:IsA("Constraint")
+            or obj:IsA("BodyMover") or obj:IsA("Humanoid") or obj:IsA("Animator")
+            or obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+            obj:Destroy()
+        end
+    end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "TrueSightDesyncHighlight"
+    highlight.Adornee = clone
+    highlight.FillColor = accent
+    highlight.OutlineColor = accent
+    highlight.FillTransparency = 0.55
+    highlight.OutlineTransparency = 0.1
+    highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+    highlight.Enabled = ghostAvatar.style ~= 2
+    highlight.Parent = clone
+
+    ghostAvatar.source = character
+    ghostAvatar.clone = clone
+    ghostAvatar.highlight = highlight
+    clone.Parent = workspace
+end
+
 local function addGhost()
     removeGhost()
+    for _, oldObject in ipairs(workspace:GetChildren()) do
+        if oldObject.Name == "TrueSightDesyncChams"
+            or oldObject.Name == "LocalServerGhost" then
+            oldObject:Destroy()
+        end
+    end
 
     local part = Instance.new("Part")
     part.Name = "LocalServerGhost"
@@ -580,7 +820,7 @@ local function addGhost()
     part.CanQuery = false
     part.CastShadow = false
     part.Transparency = 1
-    part.Size = Vector3.new(2.6, 5.2, 1.8)
+    part.Size = Vector3.new(1, 1, 1)
     part.Parent = workspace
 
     local box = Instance.new("SelectionBox")
@@ -588,15 +828,15 @@ local function addGhost()
     box.LineThickness = 0.04
     box.Color3 = accent
     box.SurfaceColor3 = accent
-    box.SurfaceTransparency = 0.82
+    box.SurfaceTransparency = 0.9
     box.Visible = false
     box.Parent = part
 
     local bb = Instance.new("BillboardGui")
     bb.Adornee = part
     bb.Size = UDim2.fromOffset(200, 24)
-    bb.StudsOffset = Vector3.new(0, 4, 0)
-    bb.AlwaysOnTop = true
+    bb.StudsOffset = Vector3.new(0, 3.2, 0)
+    bb.AlwaysOnTop = false
     bb.Enabled = ghostLabelOn
     bb.Parent = part
 
@@ -613,6 +853,7 @@ local function addGhost()
 
     ghostPart, ghostGui, ghostLabel, ghostBox = part, bb, label, box
     ghostPing = getPing()
+    if player.Character then buildGhostAvatar(player.Character) end
 
     ghostConn = RunService.Heartbeat:Connect(function()
         local now = os.clock()
@@ -622,6 +863,10 @@ local function addGhost()
             box.Visible = false
             return
         end
+        if ghostAvatar.source ~= ch or (ghostAvatar.clone and not ghostAvatar.clone.Parent) then
+            buildGhostAvatar(ch)
+        end
+        part.Size = ghostAvatar.size
 
         -- keep ~3 seconds of position history
         table.insert(ghostTimes, now)
@@ -644,15 +889,31 @@ local function addGhost()
             end
         end
 
-        part.CFrame = est * CFrame.new(0, -0.5, 0)
+        part.CFrame = est * CFrame.new(0, -0.35, 0)
+        -- Style 1 = Chams, 2 = Box only, 3 = Both.
+        box.Visible = ghostAvatar.style >= 2
+        if ghostAvatar.highlight then
+            ghostAvatar.highlight.Enabled = ghostAvatar.style ~= 2
+        end
+        for _, pair in ipairs(ghostAvatar.parts) do
+            if pair.ghost and pair.ghost.Parent then
+                pair.ghost.Material = Enum.Material.ForceField
+                pair.ghost.Transparency = (ghostAvatar.style == 2) and 1 or 0.32
+            end
+        end
+        local offset = est * root.CFrame:Inverse()
+        for _, pair in ipairs(ghostAvatar.parts) do
+            if pair.source.Parent and pair.ghost.Parent then
+                pair.ghost.CFrame = offset * pair.source.CFrame
+            end
+        end
         local dist = (est.Position - root.Position).Magnitude
-        box.Visible = dist > 0.25
 
         if now - ghostLastUi > 0.25 then
             ghostLastUi = now
             ghostPing = getPing()
             label.Text = string.format(
-                '<font color="#%s">SERVER</font>  %d ms  |  %.1f studs',
+                '<font color="#%s">DESYNC ESTIMATE</font>  %d ms  |  %.1f studs',
                 accent:ToHex(), math.floor(ghostPing + 0.5), dist)
         end
     end)
@@ -662,6 +923,17 @@ onAccent(function(c)
     if ghostBox then
         ghostBox.Color3 = c
         ghostBox.SurfaceColor3 = c
+    end
+    if ghostAvatar.highlight then
+        ghostAvatar.highlight.FillColor = c
+        ghostAvatar.highlight.OutlineColor = c
+    end
+    -- Keep every cloned body/accessory part synced with the shared accent.
+    for _, pair in ipairs(ghostAvatar.parts) do
+        if pair.ghost and pair.ghost.Parent then
+            pair.ghost.Color = c
+            pair.ghost.Material = Enum.Material.ForceField
+        end
     end
 end)
 
@@ -900,7 +1172,7 @@ local function vlist(parent)
 end
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "VisualClient"
+gui.Name = "TrueSight"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -909,7 +1181,7 @@ gui.Parent = player:WaitForChild("PlayerGui")
 
 -- Screen effects layer (sits under the menu)
 local fxGui = Instance.new("ScreenGui")
-fxGui.Name = "VisualClientFX"
+fxGui.Name = "TrueSightFX"
 fxGui.ResetOnSpawn = false
 fxGui.IgnoreGuiInset = true
 fxGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -989,7 +1261,7 @@ watermark.TextColor3 = TEXT
 watermark.Parent = gui
 corner(watermark, 4)
 onAccent(function(c)
-    watermark.Text = '  Visual<font color="#' .. c:ToHex() .. '">Client</font>  '
+    watermark.Text = '  True<font color="#' .. c:ToHex() .. '">Sight</font>  '
 end)
 
 -- HUD: module list (top right)
@@ -1049,11 +1321,31 @@ statsFrame.Position = UDim2.fromOffset(8, 40)
 statsFrame.Size = UDim2.fromOffset(200, 0)
 statsFrame.AutomaticSize = Enum.AutomaticSize.Y
 statsFrame.BackgroundTransparency = 1
+statsFrame.Active = true
+statsFrame.ZIndex = 20
 statsFrame.Parent = gui
 do
     local l = vlist(statsFrame)
     l.Padding = UDim.new(0, 4)
 end
+
+local statsHeader = Instance.new("TextButton")
+statsHeader.Name = "DragHandle"
+statsHeader.LayoutOrder = 0
+statsHeader.ZIndex = 21
+statsHeader.Size = UDim2.new(1, 0, 0, 22)
+statsHeader.BackgroundColor3 = BG
+statsHeader.BackgroundTransparency = 0.15
+statsHeader.BorderSizePixel = 0
+statsHeader.AutoButtonColor = false
+statsHeader.Active = true
+statsHeader.Font = FONTB
+statsHeader.TextSize = 11
+statsHeader.TextColor3 = DIM
+statsHeader.Text = "  TRUESIGHT  /  PERFORMANCE  ·  DRAG"
+statsHeader.TextXAlignment = Enum.TextXAlignment.Left
+statsHeader.Parent = statsFrame
+corner(statsHeader, 4)
 
 local GOOD = Color3.fromRGB(70, 255, 140)
 local OKAY = Color3.fromRGB(255, 200, 70)
@@ -1196,7 +1488,7 @@ clickGui.Size = UDim2.fromScale(1, 1)
 clickGui.BackgroundColor3 = Color3.new(0, 0, 0)
 clickGui.BackgroundTransparency = 0.6
 clickGui.BorderSizePixel = 0
-clickGui.Active = true
+clickGui.Active = false
 clickGui.Parent = gui
 
 local hint = Instance.new("TextLabel")
@@ -1212,6 +1504,29 @@ hint.Parent = clickGui
 -- Drag / slider state (handled by the global input events below)
 local dragTarget, dragStartMouse, dragStartPos
 local activeSlider
+local keyUiState = {
+    binding = false,
+    bindingModule = nil,
+    menuKey = Enum.KeyCode.RightShift,
+    keyBtn = nil,
+    updateKeyUi = nil,
+}
+
+local function startStatsDrag(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragTarget = statsFrame
+        dragStartMouse = input.Position
+        dragStartPos = statsFrame.Position
+    end
+end
+statsHeader.InputBegan:Connect(startStatsDrag)
+statsFrame.InputBegan:Connect(startStatsDrag)
+for _, object in ipairs(statsFrame:GetDescendants()) do
+    if object:IsA("GuiObject") and object ~= statsHeader then
+        object.InputBegan:Connect(startStatsDrag)
+    end
+end
 
 local function styleButton(b)
     b.BackgroundColor3 = ROW
@@ -1386,7 +1701,7 @@ end
 
 -- Module row (left-click toggle, right-click settings)
 local function addModule(panel, name, onToggle)
-    local mod = {name = name, enabled = false}
+    local mod = {name = name, enabled = false, keybind = nil}
 
     local holder = Instance.new("Frame")
     holder.LayoutOrder = nextOrder(panel)
@@ -1394,6 +1709,8 @@ local function addModule(panel, name, onToggle)
     holder.AutomaticSize = Enum.AutomaticSize.Y
     holder.BackgroundTransparency = 1
     holder.Parent = panel.frame
+    mod.holder = holder
+    mod.panel = panel.frame
     vlist(holder)
 
     local btn = Instance.new("TextButton")
@@ -1447,7 +1764,7 @@ local function addModule(panel, name, onToggle)
         refresh()
         local ok, err = pcall(onToggle, on)
         if not ok then
-            warn("[VisualClient] " .. name .. ": " .. tostring(err))
+            warn("[TrueSight] " .. name .. ": " .. tostring(err))
         end
         refreshArray()
         requestSave()
@@ -1462,6 +1779,39 @@ local function addModule(panel, name, onToggle)
         markSettings()
         return addSlider(settings, label, minV, maxV, value, step, onChange, name .. "/" .. label)
     end
+
+    local bindButton = Instance.new("TextButton")
+    bindButton.LayoutOrder = 99
+    bindButton.Size = UDim2.new(1, 0, 0, 25)
+    styleButton(bindButton)
+    bindButton.BackgroundColor3 = SUB
+    bindButton.TextSize = 12
+    bindButton.Parent = settings
+    local function refreshBindButton()
+        bindButton.Text = "      Keybind:  "
+            .. (mod.keybind and mod.keybind.Name or "None")
+            .. (keyUiState.bindingModule == mod and "  (press a key)" or "")
+    end
+    mod.refreshBindButton = refreshBindButton
+    bindButton.MouseButton1Click:Connect(function()
+        keyUiState.binding = true
+        keyUiState.bindingModule = mod
+        refreshBindButton()
+        hint.Text = "Press a key to bind " .. name .. "  |  Esc cancels"
+    end)
+    markSettings()
+    registerConfig(name .. "/Keybind", function()
+        return mod.keybind and mod.keybind.Name or ""
+    end, function(value)
+        if type(value) == "string" and value ~= "" then
+            local ok, key = pcall(function() return Enum.KeyCode[value] end)
+            mod.keybind = ok and key or nil
+        else
+            mod.keybind = nil
+        end
+        refreshBindButton()
+    end)
+    refreshBindButton()
 
     btn.MouseButton1Click:Connect(function() mod.set(not mod.enabled) end)
     btn.MouseButton2Click:Connect(function()
@@ -1487,6 +1837,41 @@ local function addAction(panel, text, callback)
     b.MouseButton1Click:Connect(callback)
     b.Parent = panel.frame
     return b
+end
+
+local function addTextInput(panel, title, placeholder, initialValue, onCommit, key)
+    local box = Instance.new("TextBox")
+    box.LayoutOrder = nextOrder(panel)
+    box.Size = UDim2.new(1, 0, 0, 30)
+    box.BackgroundColor3 = SUB
+    box.BorderSizePixel = 0
+    box.ClearTextOnFocus = false
+    box.Font = FONT
+    box.TextSize = 12
+    box.TextColor3 = TEXT
+    box.PlaceholderColor3 = DIM
+    box.PlaceholderText = placeholder
+    box.TextXAlignment = Enum.TextXAlignment.Left
+    box.Text = initialValue or ""
+    box.Parent = panel.frame
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, 8)
+    padding.PaddingRight = UDim.new(0, 8)
+    padding.Parent = box
+    box.FocusLost:Connect(function()
+        onCommit(box.Text)
+        requestSave()
+    end)
+    if key then
+        registerConfig(key, function() return box.Text end, function(value)
+            if type(value) == "string" then
+                box.Text = value
+                onCommit(value)
+            end
+        end)
+    end
+    box:SetAttribute("Title", title)
+    return box
 end
 
 -- Keeps every Color widget showing the same value
@@ -1534,10 +1919,19 @@ local auraMod = addModule(visualPanel, "Aura", function(on)
         removeAura()
     end
 end)
+auraMod.cycle("Style", {"Sparkles", "Embers", "Soft Glow"}, auraStyle, function(i)
+    auraStyle = i
+    if auraMod.enabled and player.Character then addAura(player.Character) end
+end)
 auraMod.slider("Density", 5, 60, 22, 1, function(v)
     auraRate = v
     if auraEmitter then auraEmitter.Rate = v end
 end)
+
+local verityMod = addModule(visualPanel, "Verity Pet", function(on)
+    if on then verity.add() else verity.remove() end
+end)
+table.insert(colorWidgets, verityMod.cycle("Color", presetNames, accentIndex, setAccentIndex))
 
 local trailMod = addModule(visualPanel, "Player Trails", function(on)
     if on then
@@ -1562,11 +1956,28 @@ local jumpMod = addModule(visualPanel, "Jump Circles", function(on)
 end)
 jumpMod.slider("Size", 0.5, 2.5, 1, 0.1, function(v) jumpSize = v end)
 
-local ghostMod = addModule(visualPanel, "Desync Tracker", function(on)
+local ghostMod = addModule(visualPanel, "Desync Box", function(on)
     if on then
         addGhost()
     else
         removeGhost()
+    end
+end)
+ghostMod.cycle("Style", {"Chams", "Box", "Both"}, 1, function(i)
+    ghostAvatar.style = i
+    if ghostAvatar.highlight then
+        ghostAvatar.highlight.Enabled = i ~= 2
+    end
+    if ghostBox then
+        ghostBox.Visible = i >= 2
+    end
+    -- Hide the cloned body completely in Box-only mode; otherwise the
+    -- ForceField cham itself would still show behind the box.
+    for _, pair in ipairs(ghostAvatar.parts) do
+        if pair.ghost and pair.ghost.Parent then
+            pair.ghost.Material = Enum.Material.ForceField
+            pair.ghost.Transparency = (i == 2) and 1 or 0.32
+        end
     end
 end)
 ghostMod.cycle("Label", {"On", "Off"}, 1, function(i)
@@ -1579,9 +1990,9 @@ local renderPanel = makePanel("Render", 225)
 
 local fovValue = math.floor(oldFOV + 0.5)
 local fovMod = addModule(renderPanel, "FOV", function(on)
-    pcall(function() RunService:UnbindFromRenderStep("VisualClientFOV") end)
+    pcall(function() RunService:UnbindFromRenderStep("TrueSightFOV") end)
     if on then
-        RunService:BindToRenderStep("VisualClientFOV",
+        RunService:BindToRenderStep("TrueSightFOV",
             Enum.RenderPriority.Camera.Value + 1, function()
                 local c = cam()
                 if c and math.abs(c.FieldOfView - fovValue) > 0.05 then
@@ -1620,7 +2031,7 @@ fullbrightMod.slider("Intensity", 0.2, 3, 1, 0.1, function(v)
 end)
 
 local correction = Instance.new("ColorCorrectionEffect")
-correction.Name = "VisualClientColor"
+correction.Name = "TrueSightColor"
 correction.Enabled = false
 correction.Saturation = 0.15
 correction.Contrast = 0.05
@@ -1631,7 +2042,7 @@ addModule(renderPanel, "Color Effects", function(on)
 end)
 
 local blur = Instance.new("BlurEffect")
-blur.Name = "VisualClientBlur"
+blur.Name = "TrueSightBlur"
 blur.Size = 8
 blur.Enabled = false
 blur.Parent = Lighting
@@ -1641,29 +2052,69 @@ local blurMod = addModule(renderPanel, "Blur Effect", function(on)
 end)
 blurMod.slider("Size", 2, 24, 8, 1, function(v) blur.Size = v end)
 
-local bloom = Instance.new("BloomEffect")
-bloom.Name = "VisualClientBloom"
-bloom.Enabled = false
-bloom.Intensity = 1
-bloom.Size = 24
-bloom.Threshold = 0.8
-bloom.Parent = Lighting
+local bloom = Lighting:FindFirstChildOfClass("BloomEffect")
+local bloomCreated = bloom == nil
+local bloomOriginal
+if bloom then
+    bloomOriginal = {
+        Enabled = bloom.Enabled,
+        Intensity = bloom.Intensity,
+        Size = bloom.Size,
+        Threshold = bloom.Threshold,
+    }
+else
+    bloom = Instance.new("BloomEffect")
+    bloom.Name = "TrueSightBloom"
+    bloom.Enabled = false
+    bloom.Intensity = 1
+    bloom.Size = 24
+    bloom.Threshold = 0.8
+    bloom.Parent = Lighting
+end
 
 local bloomMod = addModule(renderPanel, "Bloom", function(on)
-    bloom.Enabled = on
+    if on then
+        bloom.Enabled = true
+    elseif bloomOriginal then
+        bloom.Enabled = bloomOriginal.Enabled
+        bloom.Intensity = bloomOriginal.Intensity
+        bloom.Size = bloomOriginal.Size
+        bloom.Threshold = bloomOriginal.Threshold
+    else
+        bloom.Enabled = false
+    end
 end)
 bloomMod.slider("Intensity", 0.2, 3, 1, 0.1, function(v) bloom.Intensity = v end)
 bloomMod.slider("Size", 8, 56, 24, 2, function(v) bloom.Size = v end)
 
-local rays = Instance.new("SunRaysEffect")
-rays.Name = "VisualClientRays"
-rays.Enabled = false
-rays.Intensity = 0.25
-rays.Spread = 1
-rays.Parent = Lighting
+local rays = Lighting:FindFirstChildOfClass("SunRaysEffect")
+local raysCreated = rays == nil
+local raysOriginal
+if rays then
+    raysOriginal = {
+        Enabled = rays.Enabled,
+        Intensity = rays.Intensity,
+        Spread = rays.Spread,
+    }
+else
+    rays = Instance.new("SunRaysEffect")
+    rays.Name = "TrueSightRays"
+    rays.Enabled = false
+    rays.Intensity = 0.25
+    rays.Spread = 1
+    rays.Parent = Lighting
+end
 
 local raysMod = addModule(renderPanel, "Sun Rays", function(on)
-    rays.Enabled = on
+    if on then
+        rays.Enabled = true
+    elseif raysOriginal then
+        rays.Enabled = raysOriginal.Enabled
+        rays.Intensity = raysOriginal.Intensity
+        rays.Spread = raysOriginal.Spread
+    else
+        rays.Enabled = false
+    end
 end)
 raysMod.slider("Intensity", 0.05, 1, 0.25, 0.05, function(v) rays.Intensity = v end)
 
@@ -1677,7 +2128,10 @@ addModule(renderPanel, "FPS Boost", function(on)
     if on then
         table.clear(originalEffects)
         for _, obj in ipairs(Lighting:GetDescendants()) do
-            if obj:IsA("PostEffect") and not string.find(obj.Name, "^VisualClient") then
+            local cosmeticEffect = obj:IsA("BloomEffect")
+                or obj:IsA("BlurEffect")
+                or obj:IsA("SunRaysEffect")
+            if cosmeticEffect and not string.find(obj.Name, "^TrueSight") then
                 originalEffects[obj] = obj.Enabled
                 obj.Enabled = false
             end
@@ -1690,8 +2144,26 @@ addModule(renderPanel, "FPS Boost", function(on)
     end
 end)
 
+;(function()
 local cross = Instance.new("TextLabel")
-cross.Name = "VisualCrosshair"
+local crossMouseIconWasEnabled
+local crossMouseLockConn
+local crosshairMod
+
+local function syncCrosshairMouseIcon()
+    if not crosshairMod or not crosshairMod.enabled then return end
+    if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+        if crossMouseIconWasEnabled == nil then
+            crossMouseIconWasEnabled = UserInputService.MouseIconEnabled
+        end
+        UserInputService.MouseIconEnabled = false
+    elseif crossMouseIconWasEnabled ~= nil then
+        UserInputService.MouseIconEnabled = crossMouseIconWasEnabled
+        crossMouseIconWasEnabled = nil
+    end
+end
+
+cross.Name = "TrueSightCrosshair"
 cross.Size = UDim2.fromOffset(30, 30)
 cross.AnchorPoint = Vector2.new(0.5, 0.5)
 cross.Position = UDim2.fromScale(0.5, 0.5)
@@ -1703,12 +2175,144 @@ cross.Visible = false
 cross.Parent = gui
 onAccent(function(c) cross.TextColor3 = c end)
 
-addModule(renderPanel, "Crosshair", function(on)
+crosshairMod = addModule(renderPanel, "Crosshair", function(on)
     cross.Visible = on
+    if on then
+        if crossMouseLockConn then crossMouseLockConn:Disconnect() end
+        crossMouseLockConn = UserInputService:GetPropertyChangedSignal("MouseBehavior")
+            :Connect(syncCrosshairMouseIcon)
+        syncCrosshairMouseIcon()
+    else
+        if crossMouseLockConn then
+            crossMouseLockConn:Disconnect()
+            crossMouseLockConn = nil
+        end
+        if crossMouseIconWasEnabled ~= nil then
+            UserInputService.MouseIconEnabled = crossMouseIconWasEnabled
+            crossMouseIconWasEnabled = nil
+        end
+    end
 end)
+local crosshairShapes = {"+", "·", "○", "✛"}
+local crosshairShape = 1
+crosshairMod.cycle("Shape", {"Plus", "Dot", "Ring", "Cross"}, crosshairShape, function(i)
+    crosshairShape = i
+    cross.Text = crosshairShapes[i]
+end)
+crosshairMod.slider("Size", 16, 48, 30, 2, function(v)
+    cross.Size = UDim2.fromOffset(v, v)
+    cross.TextSize = math.floor(v * 0.8)
+end)
+end)()
 
 -- WORLD
 local worldPanel = makePanel("World", 420)
+
+;(function()
+local skyboxFaces = {
+    "SkyboxBk", "SkyboxDn", "SkyboxFt",
+    "SkyboxLf", "SkyboxRt", "SkyboxUp",
+}
+local skyboxId = ""
+local skyboxTarget
+local skyboxCreated = false
+local skyboxOriginal = {}
+local function normalizeSkyboxId(value)
+    value = string.gsub(value, "^%s*(.-)%s*$", "%1")
+    if value == "" then return "" end
+    if string.match(value, "^%d+$") then return "rbxassetid://" .. value end
+    return value
+end
+local function applySkybox()
+    local assets = {}
+    for value in string.gmatch(skyboxId, "[^,]+") do
+        local asset = normalizeSkyboxId(value)
+        if asset ~= "" then table.insert(assets, asset) end
+    end
+    if #assets ~= 1 and #assets ~= 6 then return end
+    if not skyboxTarget or not skyboxTarget.Parent then
+        skyboxTarget = Lighting:FindFirstChildOfClass("Sky")
+        if skyboxTarget then
+            for _, face in ipairs(skyboxFaces) do
+                skyboxOriginal[face] = skyboxTarget[face]
+            end
+        else
+            skyboxTarget = Instance.new("Sky")
+            skyboxTarget.Name = "TrueSightSky"
+            skyboxCreated = true
+            skyboxTarget.Parent = Lighting
+        end
+    end
+    for i, face in ipairs(skyboxFaces) do
+        skyboxTarget[face] = assets[#assets == 1 and 1 or i]
+    end
+end
+local function restoreSkybox()
+    if not skyboxTarget then return end
+    if skyboxCreated then
+        if skyboxTarget.Parent then skyboxTarget:Destroy() end
+    elseif skyboxTarget.Parent then
+        for _, face in ipairs(skyboxFaces) do
+            if skyboxOriginal[face] then skyboxTarget[face] = skyboxOriginal[face] end
+        end
+    end
+    skyboxTarget = nil
+    skyboxCreated = false
+    table.clear(skyboxOriginal)
+end
+local skyboxMod = addModule(worldPanel, "Custom Skybox", function(on)
+    if on then applySkybox() else restoreSkybox() end
+end)
+addTextInput(worldPanel, "Skybox asset ID", "One image ID or six comma-separated IDs...", "",
+    function(value)
+        skyboxId = value
+        if skyboxMod.enabled then
+            restoreSkybox()
+            applySkybox()
+        end
+    end, "World/Skybox ID")
+
+local fogColors = {
+    {name = "Mist", color = Color3.fromRGB(190, 210, 225)},
+    {name = "Blue", color = Color3.fromRGB(100, 160, 220)},
+    {name = "Rose", color = Color3.fromRGB(220, 145, 160)},
+    {name = "Gold", color = Color3.fromRGB(230, 190, 120)},
+    {name = "Violet", color = Color3.fromRGB(155, 130, 205)},
+}
+local fogColorNames = {}
+for i, preset in ipairs(fogColors) do fogColorNames[i] = preset.name end
+local fogColorIndex = 1
+local fogStartValue = math.clamp(oldLighting.FogStart, 0, 9000)
+local fogEndValue = math.clamp(oldLighting.FogEnd, 100, 12000)
+local fogControlsMod
+local function applyFogControls()
+    local finish = math.max(fogEndValue, fogStartValue + 1)
+    Lighting.FogColor = fogColors[fogColorIndex].color
+    Lighting.FogStart = fogStartValue
+    Lighting.FogEnd = finish
+end
+fogControlsMod = addModule(worldPanel, "Fog Controls", function(on)
+    if on then
+        applyFogControls()
+    else
+        Lighting.FogColor = oldLighting.FogColor
+        Lighting.FogStart = oldLighting.FogStart
+        Lighting.FogEnd = oldLighting.FogEnd
+    end
+end)
+fogControlsMod.cycle("Color", fogColorNames, fogColorIndex, function(i)
+    fogColorIndex = i
+    if fogControlsMod.enabled then applyFogControls() end
+end)
+fogControlsMod.slider("Start", 0, 9000, fogStartValue, 50, function(v)
+    fogStartValue = v
+    if fogControlsMod.enabled then applyFogControls() end
+end)
+fogControlsMod.slider("Distance", 100, 12000, fogEndValue, 100, function(v)
+    fogEndValue = v
+    if fogControlsMod.enabled then applyFogControls() end
+end)
+end)()
 
 addModule(worldPanel, "Remove Fog", setFog)
 local weatherMod = addModule(worldPanel, "Remove Weather", setWeather)
@@ -1741,8 +2345,14 @@ local timeMod = addModule(worldPanel, "Time Changer", function(on)
     end
 end)
 timeMod.slider("Hour", 0, 23.5, 14, 0.5, function(v) timeValue = v end)
+timeMod.cycle("Preset", {"Morning", "Noon", "Sunset", "Night"}, 2, function(i)
+    local presetHours = {8, 12, 18, 0}
+    timeValue = presetHours[i]
+    if timeMod.enabled then Lighting.ClockTime = timeValue end
+end)
 
 -- HUD
+;(function()
 local hudPanel = makePanel("HUD", 810)
 
 local fpsConn
@@ -1804,57 +2414,125 @@ pingMod.set(true)
 -- CLIENT
 local clientPanel = makePanel("Client", 615)
 
+;(function()
+local function applyModuleSearch(text)
+    local query = string.lower(text)
+    local panelHasMatch = {}
+    for _, m in ipairs(modules) do
+        local matches = query == "" or string.find(string.lower(m.name), query, 1, true) ~= nil
+        m.holder.Visible = matches
+        if matches then panelHasMatch[m.panel] = true end
+    end
+    for title, panel in pairs(panelRegistry) do
+        if title ~= "Client" then
+            panel.Visible = query == "" or panelHasMatch[panel] == true
+        end
+    end
+end
+local searchBox = addTextInput(clientPanel, "Command Search",
+    "Search commands / modules...", "", applyModuleSearch)
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    applyModuleSearch(searchBox.Text)
+end)
+end)()
+
 do
     local w = addCycle(clientPanel.frame, "Theme Color", presetNames, accentIndex, setAccentIndex, "Client/Theme Color")
     w.button.LayoutOrder = nextOrder(clientPanel)
     table.insert(colorWidgets, w)
 end
 
-local menuKey = Enum.KeyCode.RightShift
-local binding = false
-local keyBtn
-
-local function updateKeyUi()
-    if binding then
-        keyBtn.Text = "   Press a key...  (Esc cancels)"
+keyUiState.updateKeyUi = function()
+    if keyUiState.bindingModule then
+        keyUiState.keyBtn.Text = "   Binding: " .. keyUiState.bindingModule.name .. "  (Esc cancels)"
+    elseif keyUiState.binding then
+        keyUiState.keyBtn.Text = "   Press a key...  (Esc cancels)"
     else
-        keyBtn.Text = "   Menu Key:  " .. menuKey.Name
+        keyUiState.keyBtn.Text = "   Menu Key:  " .. keyUiState.menuKey.Name
     end
     hint.Text = "Left-click: toggle  |  Right-click: settings  |  "
-        .. menuKey.Name .. ": hide/show menu"
+        .. keyUiState.menuKey.Name .. ": hide/show menu  |  Module keys toggle modules"
 end
 
-keyBtn = addAction(clientPanel, "", function()
-    binding = true
-    updateKeyUi()
+keyUiState.keyBtn = addAction(clientPanel, "", function()
+    keyUiState.binding = true
+    keyUiState.updateKeyUi()
 end)
-updateKeyUi()
+keyUiState.updateKeyUi()
+
+addAction(clientPanel, "Reset Character", function()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.Health > 0 then
+        pcall(function() humanoid.Health = 0 end)
+    end
+end)
+
+local rejoinButton
+rejoinButton = addAction(clientPanel, "Rejoin Server", function()
+    -- Try to return to this exact server instance first.
+    local ok = pcall(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+    end)
+
+    -- If the current instance cannot be rejoined, try joining the same place.
+    if not ok then
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, player)
+        end)
+    end
+end)
 
 local arrayMod = addModule(hudPanel, "ArrayList", function(on)
     arrayFrame.Visible = on
 end)
 arrayMod.hidden = true
 arrayMod.set(true)
+end)()
 
 ------------------------------------------------------------------
 -- Input handling
 ------------------------------------------------------------------
 table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
-    if binding then
+    if keyUiState.bindingModule then
         if input.UserInputType == Enum.UserInputType.Keyboard then
             if input.KeyCode ~= Enum.KeyCode.Escape then
-                menuKey = input.KeyCode
+                if input.KeyCode == Enum.KeyCode.Backspace then
+                    keyUiState.bindingModule.keybind = nil
+                else
+                    keyUiState.bindingModule.keybind = input.KeyCode
+                end
             end
-            binding = false
-            updateKeyUi()
+            local wasBinding = keyUiState.bindingModule
+            keyUiState.bindingModule = nil
+            keyUiState.binding = false
+            wasBinding.refreshBindButton()
+            keyUiState.updateKeyUi()
+            requestSave()
+        end
+        return
+    elseif keyUiState.binding then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            if input.KeyCode ~= Enum.KeyCode.Escape then
+                keyUiState.menuKey = input.KeyCode
+            end
+            keyUiState.binding = false
+            keyUiState.updateKeyUi()
             requestSave()
         end
         return
     end
 
     if processed then return end
-    if input.KeyCode == menuKey then
+    if input.KeyCode == keyUiState.menuKey then
         clickGui.Visible = not clickGui.Visible
+        return
+    end
+    for _, m in ipairs(modules) do
+        if m.keybind and input.KeyCode == m.keybind then
+            m.set(not m.enabled)
+            break
+        end
     end
 end))
 
@@ -1899,6 +2577,7 @@ table.insert(connections, player.CharacterAdded:Connect(function(character)
     if wingMod.enabled then addWings(character) end
     if auraMod.enabled then addAura(character) end
     if jumpMod.enabled then hookJump(character) end
+    if ghostMod.enabled then addGhost() end
 end))
 
 ------------------------------------------------------------------
@@ -1914,18 +2593,32 @@ local function cleanup()
     end
     for _, c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
-    pcall(function() RunService:UnbindFromRenderStep("VisualClientFOV") end)
+    pcall(function() RunService:UnbindFromRenderStep("TrueSightFOV") end)
 
     removeHat()
     removeTrail()
     removeWings()
     removeAura()
+    verity.remove()
     unhookJump()
     removeGhost()
     correction:Destroy()
     blur:Destroy()
-    bloom:Destroy()
-    rays:Destroy()
+    if bloomCreated then
+        bloom:Destroy()
+    elseif bloomOriginal and bloom.Parent then
+        bloom.Enabled = bloomOriginal.Enabled
+        bloom.Intensity = bloomOriginal.Intensity
+        bloom.Size = bloomOriginal.Size
+        bloom.Threshold = bloomOriginal.Threshold
+    end
+    if raysCreated then
+        rays:Destroy()
+    elseif raysOriginal and rays.Parent then
+        rays.Enabled = raysOriginal.Enabled
+        rays.Intensity = raysOriginal.Intensity
+        rays.Spread = raysOriginal.Spread
+    end
     fxGui:Destroy()
     gui:Destroy()
 end
@@ -1933,24 +2626,48 @@ end
 ------------------------------------------------------------------
 -- Config saving (needs an executor with writefile / readfile)
 ------------------------------------------------------------------
-local CONFIG_PATH = canFolder and "VisualClient/config.json" or "VisualClientConfig.json"
+;(function()
+local CONFIG_PATH = canFolder and "TrueSight/config.json" or "TrueSightConfig.json"
+local currentProfile = "default"
 
-local function readConfig()
-    if not canFile or not isfile(CONFIG_PATH) then return nil end
+local function normalizeProfileName(value)
+    local safe = string.gsub(tostring(value or ""), "[^%w_-]", "")
+    return string.sub(safe, 1, 24)
+end
+
+local function profilePath(profile)
+    if profile == "default" then return CONFIG_PATH end
+    if canFolder then return "TrueSight/" .. profile .. ".json" end
+    return "TrueSight_" .. profile .. ".json"
+end
+
+local function readConfig(profileName)
+    local profile = normalizeProfileName(profileName or currentProfile)
+    if profile == "" then return nil end
+    local path = profilePath(profile)
+    if profile == "default" and canFile and not isfile(path) then
+        local legacyPath = canFolder and "VisualClient/config.json" or "VisualClientConfig.json"
+        if isfile(legacyPath) then path = legacyPath end
+    end
+    if not canFile or not isfile(path) then return nil end
     local ok, data = pcall(function()
-        return HttpService:JSONDecode(readfile(CONFIG_PATH))
+        return HttpService:JSONDecode(readfile(path))
     end)
     if ok and type(data) == "table" then return data end
     return nil
 end
 
-saveConfig = function()
+saveConfig = function(profileName)
     if not canFile then return false end
+    local profile = normalizeProfileName(profileName or currentProfile)
+    if profile == "" then return false end
+    currentProfile = profile
+    local path = profilePath(profile)
 
     local data = {
         version = 1,
         accent = accentIndex,
-        menuKey = menuKey.Name,
+        menuKey = keyUiState.menuKey.Name,
         modules = {},
         values = {},
         panels = {},
@@ -1970,10 +2687,10 @@ saveConfig = function()
     end
 
     local ok = pcall(function()
-        if canFolder and not isfolder("VisualClient") then
-            makefolder("VisualClient")
+        if canFolder and not isfolder("TrueSight") then
+            makefolder("TrueSight")
         end
-        writefile(CONFIG_PATH, HttpService:JSONEncode(data))
+        writefile(path, HttpService:JSONEncode(data))
     end)
     return ok
 end
@@ -1996,8 +2713,8 @@ local function applyConfig(data)
     if type(data.menuKey) == "string" then
         local ok, kc = pcall(function() return Enum.KeyCode[data.menuKey] end)
         if ok and kc then
-            menuKey = kc
-            updateKeyUi()
+            keyUiState.menuKey = kc
+            keyUiState.updateKeyUi()
         end
     end
 
@@ -2014,6 +2731,10 @@ local function applyConfig(data)
     if type(data.modules) == "table" then
         for _, m in ipairs(modules) do
             local want = data.modules[m.name]
+            if want == nil and m.name == "Desync Box" then
+                want = data.modules["Own Position Estimate"]
+                if want == nil then want = data.modules["Desync Tracker"] end
+            end
             if type(want) == "boolean" then m.set(want) end
         end
     end
@@ -2050,6 +2771,39 @@ loadBtn = addAction(clientPanel, "Load Config", function()
     end
 end)
 
+local profileInput
+profileInput = addTextInput(clientPanel, "Config Profile",
+    "Profile name (letters, numbers, _ or -)...", "default", function(value)
+        local safe = normalizeProfileName(value)
+        if safe ~= "" then
+            profileInput.Text = safe
+            currentProfile = safe
+        end
+    end)
+local saveProfileBtn
+saveProfileBtn = addAction(clientPanel, "Save Profile", function()
+    local profile = normalizeProfileName(profileInput.Text)
+    if profile == "" then
+        flash(saveProfileBtn, "Enter a profile name", "Save Profile")
+    elseif saveConfig(profile) then
+        flash(saveProfileBtn, "Saved " .. profile, "Save Profile")
+    else
+        flash(saveProfileBtn, "Save failed", "Save Profile")
+    end
+end)
+local loadProfileBtn
+loadProfileBtn = addAction(clientPanel, "Load Profile", function()
+    local profile = normalizeProfileName(profileInput.Text)
+    local data = profile ~= "" and readConfig(profile) or nil
+    if data then
+        currentProfile = profile
+        applyConfig(data)
+        flash(loadProfileBtn, "Loaded " .. profile, "Load Profile")
+    else
+        flash(loadProfileBtn, "Profile not found", "Load Profile")
+    end
+end)
+
 addAction(clientPanel, "Unload Client", cleanup)
 
 -- auto-load the saved config on start
@@ -2057,5 +2811,6 @@ if canFile then
     local data = readConfig()
     if data then applyConfig(data) end
 end
+end)()
 
-print("Visual Client loaded. Press " .. menuKey.Name .. " to hide/show the menu.")
+print("TrueSight loaded. Press " .. keyUiState.menuKey.Name .. " to hide/show the menu.")
