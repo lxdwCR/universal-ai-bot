@@ -3126,22 +3126,26 @@ local sprintKeyIndex = 1
 local sprintKeyName = sprintKeyOptions[sprintKeyIndex]
 local sprintConn
 local sprintInputWarned = false
+local sprintTapToken = 0
 
+-- Always attempt key-up, even if the press/wait path errors. Some executors
+-- can leave a synthetic key held if the release call is skipped or fails.
 local function tapSprintKey(keyName)
     local keyInfo = sprintKeyData[keyName]
     if not keyInfo then return false end
 
-    -- Prefer the executor's standard keypress/keyrelease pair when available.
     if type(keypress) == "function" and type(keyrelease) == "function" then
-        local downOk = pcall(function() keypress(keyInfo.virtualKey) end)
+        local downOk = pcall(keypress, keyInfo.virtualKey)
         if downOk then
-            task.wait(0.06)
-            pcall(function() keyrelease(keyInfo.virtualKey) end)
-            return true
+            task.wait(0.045)
+            local upOk = pcall(keyrelease, keyInfo.virtualKey)
+            if upOk then return true end
+            -- Retry release once before falling back to another input route.
+            task.wait()
+            pcall(keyrelease, keyInfo.virtualKey)
         end
     end
 
-    -- Fall back to VirtualInputManager in executors that expose it.
     local serviceOk, virtualInput = pcall(function()
         return game:GetService("VirtualInputManager")
     end)
@@ -3149,16 +3153,26 @@ local function tapSprintKey(keyName)
         local downOk = pcall(function()
             virtualInput:SendKeyEvent(true, keyInfo.keyCode, false, game)
         end)
-        task.wait(0.06)
+        task.wait(0.045)
         local upOk = pcall(function()
             virtualInput:SendKeyEvent(false, keyInfo.keyCode, false, game)
         end)
+        -- A release is attempted even if the press call reports an error.
+        if not upOk then
+            pcall(function()
+                virtualInput:SendKeyEvent(false, keyInfo.keyCode, false, game)
+            end)
+        end
         return downOk and upOk
     end
     return false
 end
 
 local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
+    -- Invalidate any pending tap loop from a previous enable/disable cycle.
+    sprintTapToken += 1
+    local thisToken = sprintTapToken
+
     if sprintConn then
         sprintConn:Disconnect()
         sprintConn = nil
@@ -3167,40 +3181,38 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
     if not on then return end
 
     local elapsed = 0
-    local previousEligibleWalk = false
-    local previousRunSpeed = false
     local lastAttempt = -math.huge
+    local tapInProgress = false
 
     sprintConn = RunService.Heartbeat:Connect(function(dt)
         elapsed += dt
-        if elapsed < 0.10 then return end
+        if elapsed < 0.05 then return end
         elapsed = 0
 
         local character = player.Character
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
         if not humanoid or humanoid.Health <= 0 then
-            previousEligibleWalk = false
-            previousRunSpeed = false
             return
         end
 
-        -- Avoid sending game input while the user is typing into the menu/chat.
         local focused = UserInputService:GetFocusedTextBox()
         local moving = humanoid.MoveDirection.Magnitude > 0.05
         local speed = humanoid.WalkSpeed
-        -- YBA's normal walk speed is generally around 16; running is usually
-        -- above 19. A speed below 5 commonly indicates a stun/movement lock.
         local running = speed >= 19
-        local eligibleWalk = moving and speed >= 5 and speed < 19
-        local shouldTap = eligibleWalk and (not previousEligibleWalk or previousRunSpeed)
+        local walkingWhileMoving = moving and speed >= 5 and not running
 
-        previousEligibleWalk = eligibleWalk
-        previousRunSpeed = running
-
-        if not focused and shouldTap and (os.clock() - lastAttempt) >= 0.8 then
+        -- Keep checking rather than only tapping on the first movement frame.
+        -- If the game cancels sprint or the first input is missed, retry while
+        -- the character is still moving at walk speed. The longer retry window
+        -- gives YBA time to update WalkSpeed and avoids rapidly toggling sprint.
+        if not focused and walkingWhileMoving and not tapInProgress
+            and (os.clock() - lastAttempt) >= 0.65 then
             lastAttempt = os.clock()
+            tapInProgress = true
             task.spawn(function()
                 local sent = tapSprintKey(sprintKeyName)
+                tapInProgress = false
+                if thisToken ~= sprintTapToken then return end
                 if not sent and not sprintInputWarned then
                     sprintInputWarned = true
                     warn("[TrueSight] Auto Sprint could not send a key. This executor may not expose keypress/keyrelease or VirtualInputManager input.")
@@ -3216,9 +3228,7 @@ autoSprintMod.cycle("Run Key", sprintKeyOptions, sprintKeyIndex, function(index)
     if sprintKeyOptions[index] then
         sprintKeyIndex = index
         sprintKeyName = sprintKeyOptions[index]
-        -- If enabled, let the new key be attempted on the next walk/run transition.
         if sprintConn then
-            -- Recreate the loop so the new key can be tried immediately if walking.
             autoSprintMod.set(false)
             autoSprintMod.set(true)
         end
