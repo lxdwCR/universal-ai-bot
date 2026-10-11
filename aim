@@ -3107,6 +3107,124 @@ do
     table.insert(colorWidgets, w)
 end
 
+------------------------------------------------------------------
+-- YBA Auto Sprint
+-- YBA commonly toggles running with a configurable key (often Left Ctrl).
+-- This module taps the selected key when movement resumes at walk speed,
+-- and when the character drops from running speed back to walk speed.
+------------------------------------------------------------------
+local sprintKeyOptions = {"Left Ctrl", "Left Shift", "Right Ctrl", "Right Shift", "V", "C"}
+local sprintKeyData = {
+    ["Left Ctrl"]  = {keyCode = Enum.KeyCode.LeftControl,  virtualKey = 0x11},
+    ["Right Ctrl"] = {keyCode = Enum.KeyCode.RightControl, virtualKey = 0x11},
+    ["Left Shift"] = {keyCode = Enum.KeyCode.LeftShift,    virtualKey = 0x10},
+    ["Right Shift"]= {keyCode = Enum.KeyCode.RightShift,   virtualKey = 0x10},
+    ["V"] = {keyCode = Enum.KeyCode.V, virtualKey = 0x56},
+    ["C"] = {keyCode = Enum.KeyCode.C, virtualKey = 0x43},
+}
+local sprintKeyIndex = 1
+local sprintKeyName = sprintKeyOptions[sprintKeyIndex]
+local sprintConn
+local sprintInputWarned = false
+
+local function tapSprintKey(keyName)
+    local keyInfo = sprintKeyData[keyName]
+    if not keyInfo then return false end
+
+    -- Prefer the executor's standard keypress/keyrelease pair when available.
+    if type(keypress) == "function" and type(keyrelease) == "function" then
+        local downOk = pcall(function() keypress(keyInfo.virtualKey) end)
+        if downOk then
+            task.wait(0.06)
+            pcall(function() keyrelease(keyInfo.virtualKey) end)
+            return true
+        end
+    end
+
+    -- Fall back to VirtualInputManager in executors that expose it.
+    local serviceOk, virtualInput = pcall(function()
+        return game:GetService("VirtualInputManager")
+    end)
+    if serviceOk and virtualInput then
+        local downOk = pcall(function()
+            virtualInput:SendKeyEvent(true, keyInfo.keyCode, false, game)
+        end)
+        task.wait(0.06)
+        local upOk = pcall(function()
+            virtualInput:SendKeyEvent(false, keyInfo.keyCode, false, game)
+        end)
+        return downOk and upOk
+    end
+    return false
+end
+
+local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
+    if sprintConn then
+        sprintConn:Disconnect()
+        sprintConn = nil
+    end
+
+    if not on then return end
+
+    local elapsed = 0
+    local previousEligibleWalk = false
+    local previousRunSpeed = false
+    local lastAttempt = -math.huge
+
+    sprintConn = RunService.Heartbeat:Connect(function(dt)
+        elapsed += dt
+        if elapsed < 0.10 then return end
+        elapsed = 0
+
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then
+            previousEligibleWalk = false
+            previousRunSpeed = false
+            return
+        end
+
+        -- Avoid sending game input while the user is typing into the menu/chat.
+        local focused = UserInputService:GetFocusedTextBox()
+        local moving = humanoid.MoveDirection.Magnitude > 0.05
+        local speed = humanoid.WalkSpeed
+        -- YBA's normal walk speed is generally around 16; running is usually
+        -- above 19. A speed below 5 commonly indicates a stun/movement lock.
+        local running = speed >= 19
+        local eligibleWalk = moving and speed >= 5 and speed < 19
+        local shouldTap = eligibleWalk and (not previousEligibleWalk or previousRunSpeed)
+
+        previousEligibleWalk = eligibleWalk
+        previousRunSpeed = running
+
+        if not focused and shouldTap and (os.clock() - lastAttempt) >= 0.8 then
+            lastAttempt = os.clock()
+            task.spawn(function()
+                local sent = tapSprintKey(sprintKeyName)
+                if not sent and not sprintInputWarned then
+                    sprintInputWarned = true
+                    warn("[TrueSight] Auto Sprint could not send a key. This executor may not expose keypress/keyrelease or VirtualInputManager input.")
+                    if notifyConfig then
+                        notifyConfig("Auto Sprint input unavailable in this executor", true)
+                    end
+                end
+            end)
+        end
+    end)
+end)
+autoSprintMod.cycle("Run Key", sprintKeyOptions, sprintKeyIndex, function(index)
+    if sprintKeyOptions[index] then
+        sprintKeyIndex = index
+        sprintKeyName = sprintKeyOptions[index]
+        -- If enabled, let the new key be attempted on the next walk/run transition.
+        if sprintConn then
+            -- Recreate the loop so the new key can be tried immediately if walking.
+            autoSprintMod.set(false)
+            autoSprintMod.set(true)
+        end
+    end
+end)
+
 keyUiState.updateKeyUi = function()
     if keyUiState.bindingModule then
         keyUiState.keyBtn.Text = "   Binding: " .. keyUiState.bindingModule.name .. "  (Esc cancels)"
