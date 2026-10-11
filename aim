@@ -1573,6 +1573,9 @@ local function styleButton(b)
     b.TextXAlignment = Enum.TextXAlignment.Left
 end
 
+local panelStatesByFrame = setmetatable({}, {__mode = "k"})
+local fallbackOrder = 0
+
 local function makePanel(title, x)
     local panel = Instance.new("Frame")
     panel.Name = title
@@ -1616,12 +1619,46 @@ local function makePanel(title, x)
         end
     end)
 
-    return {frame = panel, n = 0}
+    local state = {frame = panel, n = 0}
+    panelStatesByFrame[panel] = state
+    return state
+end
+
+-- Resolve both the usual {frame = Frame, n = number} wrapper and a raw Frame.
+-- Some executor/build combinations produced a nil panel argument during UI setup;
+-- fall back to an existing utility panel rather than aborting the entire script.
+local function resolvePanelState(panel)
+    if type(panel) == "table" and panel.frame then
+        return panel
+    end
+    if typeof(panel) == "Instance" then
+        return panelStatesByFrame[panel]
+    end
+
+    local preferred = panelRegistry["Client"] or panelRegistry["Config"]
+    if preferred and panelStatesByFrame[preferred] then
+        warn("[TrueSight] UI helper received a nil panel; using " .. preferred.Name .. " panel as fallback")
+        return panelStatesByFrame[preferred]
+    end
+    for _, frame in pairs(panelRegistry) do
+        local state = panelStatesByFrame[frame]
+        if state then
+            warn("[TrueSight] UI helper received a nil panel; using " .. frame.Name .. " panel as fallback")
+            return state
+        end
+    end
+    return nil
 end
 
 local function nextOrder(panel)
-    panel.n += 1
-    return panel.n
+    local state = resolvePanelState(panel)
+    if not state then
+        fallbackOrder += 1
+        warn("[TrueSight] Could not resolve panel for LayoutOrder; using fallback order " .. tostring(fallbackOrder))
+        return 100000 + fallbackOrder
+    end
+    state.n = (tonumber(state.n) or 0) + 1
+    return state.n
 end
 
 -- Cycle widget: click to step through options
@@ -1863,20 +1900,30 @@ end
 
 -- Plain action row (not a toggle)
 local function addAction(panel, text, callback)
+    local state = resolvePanelState(panel)
+    if not state then
+        warn("[TrueSight] Skipping action row because no panel is available: " .. tostring(text))
+        return nil
+    end
     local b = Instance.new("TextButton")
-    b.LayoutOrder = nextOrder(panel)
+    b.LayoutOrder = nextOrder(state)
     b.Size = UDim2.new(1, 0, 0, 28)
     styleButton(b)
     b.TextColor3 = TEXT
     b.Text = "   " .. text
     b.MouseButton1Click:Connect(callback)
-    b.Parent = panel.frame
+    b.Parent = state.frame
     return b
 end
 
 local function addTextInput(panel, title, placeholder, initialValue, onCommit, key)
+    local state = resolvePanelState(panel)
+    if not state then
+        warn("[TrueSight] Skipping text input because no panel is available: " .. tostring(title))
+        return nil
+    end
     local box = Instance.new("TextBox")
-    box.LayoutOrder = nextOrder(panel)
+    box.LayoutOrder = nextOrder(state)
     box.Size = UDim2.new(1, 0, 0, 30)
     box.BackgroundColor3 = SUB
     box.BorderSizePixel = 0
@@ -1888,7 +1935,7 @@ local function addTextInput(panel, title, placeholder, initialValue, onCommit, k
     box.PlaceholderText = placeholder
     box.TextXAlignment = Enum.TextXAlignment.Left
     box.Text = initialValue or ""
-    box.Parent = panel.frame
+    box.Parent = state.frame
     local padding = Instance.new("UIPadding")
     padding.PaddingLeft = UDim.new(0, 8)
     padding.PaddingRight = UDim.new(0, 8)
@@ -2546,6 +2593,41 @@ watermarkMod.hidden = true
 local nameTagObjects = {}
 local nameTagLoop
 local nameTagsMod
+
+-- Avoid treating keybinds (for example Q or Tab) as stand names. YBA may
+-- expose control/keybind values alongside other character/player values.
+local invalidStandTokens = {
+    q=true, w=true, e=true, r=true, t=true, y=true, u=true, i=true, o=true, p=true,
+    a=true, s=true, d=true, f=true, g=true, h=true, j=true, k=true, l=true,
+    z=true, x=true, c=true, v=true, b=true, n=true, m=true,
+    tab=true, shift=true, leftshift=true, rightshift=true,
+    ctrl=true, control=true, leftcontrol=true, rightcontrol=true,
+    alt=true, leftalt=true, rightalt=true, space=true, escape=true, esc=true,
+    enter=true, ["return"]=true, backspace=true, capslock=true,
+    mousebutton1=true, mousebutton2=true, mousebutton3=true,
+    unknown=true, none=true, ["nil"]=true, na=true, notavailable=true,
+    stand=true, standname=true, currentstand=true, standtype=true,
+    default=true, summon=true, desummon=true,
+}
+
+local function normalizeStandCandidate(value)
+    if typeof(value) == "Instance" then
+        value = value.Name
+    end
+    if type(value) ~= "string" then return nil end
+    value = value:gsub("^%s+", ""):gsub("%s+$", "")
+    if value == "" or #value > 48 then return nil end
+
+    local compact = string.lower(value)
+    compact = compact:gsub("^enum%.keycode%.", ""):gsub("^keycode%.", "")
+    compact = compact:gsub("[%s_%-%.]", "")
+    if invalidStandTokens[compact] or string.match(compact, "^%d+$") then
+        return nil
+    end
+    -- Single-letter labels are almost always keybinds, not YBA stand names.
+    if #compact == 1 and string.match(compact, "^[%a]$") then return nil end
+    return value
+end
 local function removeNameTag(plr)
     local guiObject = nameTagObjects[plr]
     if guiObject then
@@ -2554,9 +2636,17 @@ local function removeNameTag(plr)
     end
 end
 local function createNameTag(plr)
-    if plr == player or nameTagObjects[plr] then return end
+    if plr == player then return end
     local character = plr.Character
     local head = character and character:FindFirstChild("Head")
+    local existing = nameTagObjects[plr]
+    -- Keep the same GUI instance, but retarget it whenever this player respawns.
+    if existing and existing.Parent then
+        if head and existing.Adornee ~= head then
+            existing.Adornee = head
+        end
+        return existing
+    end
     if not head then return end
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "TrueSightNameTag"
@@ -2597,11 +2687,18 @@ local function setNameTags(on)
                 local head = character and character:FindFirstChild("Head")
                 local hum = character and character:FindFirstChildOfClass("Humanoid")
                 local tag = nameTagObjects[plr]
-                if head and hum and hum.Health > 0 then
+                -- Resolve a missing tag and retarget it to the new character's Head
+                -- before checking health. Dead characters hide the tag temporarily;
+                -- a respawn reuses the GUI and attaches it to the replacement Head.
+                if head then
                     if not tag or not tag.Parent then
                         createNameTag(plr)
                         tag = nameTagObjects[plr]
+                    elseif tag.Adornee ~= head then
+                        tag.Adornee = head
                     end
+                end
+                if head and hum and hum.Health > 0 then
                     if tag then
                         local point, onScreen = camera:WorldToViewportPoint(head.Position)
                         local visible = onScreen and point.Z > 0
@@ -2616,9 +2713,12 @@ local function setNameTags(on)
                             local standKeys = {"StandName", "Stand", "CurrentStand", "StandType"}
                             for _, key in ipairs(standKeys) do
                                 local ok, value = pcall(function() return plr:GetAttribute(key) end)
-                                if ok and type(value) == "string" and value ~= "" then standName = value break end
-                                ok, value = pcall(function() return character:GetAttribute(key) end)
-                                if ok and type(value) == "string" and value ~= "" then standName = value break end
+                                if ok then standName = normalizeStandCandidate(value) end
+                                if not standName then
+                                    ok, value = pcall(function() return character:GetAttribute(key) end)
+                                    if ok then standName = normalizeStandCandidate(value) end
+                                end
+                                if standName then break end
                             end
                             if not standName then
                                 for _, container in ipairs({plr, character}) do
@@ -2626,9 +2726,8 @@ local function setNameTags(on)
                                         if (obj:IsA("StringValue") or obj:IsA("ObjectValue")) then
                                             local n = string.lower(obj.Name)
                                             if string.find(n, "stand", 1, true) then
-                                                local value = obj.Value
-                                                if typeof(value) == "Instance" then value = value.Name end
-                                                if type(value) == "string" and value ~= "" then standName = value break end
+                                                local candidate = normalizeStandCandidate(obj.Value)
+                                                if candidate then standName = candidate break end
                                             end
                                         end
                                     end
@@ -2636,17 +2735,19 @@ local function setNameTags(on)
                                 end
                             end
                             if not standName then
-                                -- In many YBA builds the summoned Stand is a child Model
-                                -- of the character and its name is the actual Stand name.
+                                -- Some builds parent the summoned Stand model directly to
+                                -- the character. Ignore control/key names and utility models.
                                 for _, obj in ipairs(character:GetChildren()) do
                                     if obj:IsA("Model") and obj.Name ~= "" then
                                         local n = string.lower(obj.Name)
                                         if not string.find(n, "effect", 1, true)
                                             and not string.find(n, "hitbox", 1, true)
-                                            and not string.find(n, "dummy", 1, true) then
-                                            standName = obj.Name:gsub("[Ss]tand", "")
-                                            if standName == "" then standName = obj.Name end
-                                            break
+                                            and not string.find(n, "dummy", 1, true)
+                                            and not string.find(n, "rig", 1, true)
+                                            and not string.find(n, "vfx", 1, true) then
+                                            local candidate = normalizeStandCandidate(obj.Name:gsub("[Ss]tand", ""))
+                                            if not candidate then candidate = normalizeStandCandidate(obj.Name) end
+                                            if candidate then standName = candidate break end
                                         end
                                     end
                                 end
@@ -2696,6 +2797,54 @@ stunTimerLabel.Selectable = true
 stunTimerLabel.Parent = gui
 corner(stunTimerLabel, 6)
 
+-- Optional head-attached display for players who prefer the timer above their
+-- own character rather than as a draggable screen HUD element.
+local stunTimerMod
+local stunDisplayMode = 1 -- 1 = screen GUI, 2 = above head
+local stunHeadBillboard = Instance.new("BillboardGui")
+stunHeadBillboard.Name = "TrueSightStunHeadTimer"
+stunHeadBillboard.Size = UDim2.fromOffset(190, 30)
+stunHeadBillboard.StudsOffset = Vector3.new(0, 3.15, 0)
+stunHeadBillboard.AlwaysOnTop = true
+stunHeadBillboard.LightInfluence = 0
+stunHeadBillboard.Enabled = false
+stunHeadBillboard.Parent = gui
+local stunHeadLabel = Instance.new("TextLabel")
+stunHeadLabel.Name = "Label"
+stunHeadLabel.Size = UDim2.fromScale(1, 1)
+stunHeadLabel.BackgroundTransparency = 1
+stunHeadLabel.Font = FONTB
+stunHeadLabel.TextSize = 13
+stunHeadLabel.TextColor3 = TEXT
+stunHeadLabel.TextStrokeTransparency = 0.2
+stunHeadLabel.Text = stunTimerLabel.Text
+stunHeadLabel.Parent = stunHeadBillboard
+
+local function setStunTimerText(text, color)
+    stunTimerLabel.Text = text
+    stunTimerLabel.TextColor3 = color or TEXT
+    stunHeadLabel.Text = text
+    stunHeadLabel.TextColor3 = color or TEXT
+end
+
+local function updateStunDisplay()
+    local enabled = stunTimerMod and stunTimerMod.enabled or false
+    local showScreen = enabled and stunDisplayMode == 1
+    local showHead = enabled and stunDisplayMode == 2
+    stunTimerLabel.Visible = showScreen
+    local character = player.Character
+    local head = character and character:FindFirstChild("Head")
+    if showHead and head then
+        if stunHeadBillboard.Adornee ~= head then
+            stunHeadBillboard.Adornee = head
+        end
+        stunHeadBillboard.Enabled = true
+    else
+        stunHeadBillboard.Enabled = false
+        if not head then stunHeadBillboard.Adornee = nil end
+    end
+end
+
 local stunDrag = {active = false, input = nil, start = nil, position = nil}
 stunTimerLabel.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -2717,7 +2866,6 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
-local stunTimerMod
 local stunStartedAt
 -- Fallback estimate when YBA only exposes a boolean/flag rather than a remaining timer.
 -- The estimate improves from measured stun lengths observed on this client during this session.
@@ -2862,7 +3010,7 @@ end
 local stunTimerConn
 stunTimerMod = addModule(hudPanel, "YBA Stun Timer", function(on)
     if stunTimerConn then stunTimerConn:Disconnect() stunTimerConn = nil end
-    stunTimerLabel.Visible = on
+    updateStunDisplay()
     stunStartedAt = nil
     predictedStunDuration = nil
     if on then
@@ -2884,18 +3032,18 @@ stunTimerMod = addModule(hudPanel, "YBA Stun Timer", function(on)
                 local left
                 if explicitRemaining and explicitRemaining > 0 then
                     left = explicitRemaining
-                    stunTimerLabel.Text = string.format("STUN: %.1fs LEFT", left)
+                    setStunTimerText(string.format("STUN: %.1fs LEFT", left), BAD)
                 else
                     left = math.max(0, predictedStunDuration - (now - stunStartedAt))
                     if left > 0 then
-                        stunTimerLabel.Text = string.format("STUN: ~%.1fs LEFT", left)
+                        setStunTimerText(string.format("STUN: ~%.1fs LEFT", left), BAD)
                     else
                         -- Detection is still active after our estimate expired.
                         -- Never imply the stun ended until the detected flag clears.
-                        stunTimerLabel.Text = "STUN: ~0.0s LEFT"
+                        setStunTimerText("STUN: ~0.0s LEFT", BAD)
                     end
                 end
-                stunTimerLabel.TextColor3 = BAD
+                updateStunDisplay()
             else
                 if stunStartedAt then
                     local observed = now - stunStartedAt
@@ -2906,13 +3054,21 @@ stunTimerMod = addModule(hudPanel, "YBA Stun Timer", function(on)
                 end
                 stunStartedAt = nil
                 predictedStunDuration = nil
-                stunTimerLabel.Text = "STUN: not detected"
-                stunTimerLabel.TextColor3 = TEXT
+                setStunTimerText("STUN: not detected", TEXT)
+                updateStunDisplay()
             end
         end)
     end
 end)
 stunTimerMod.hidden = false
+stunTimerMod.cycle("Display", {"Screen GUI", "Above Head"}, 1, function(index)
+    stunDisplayMode = index
+    updateStunDisplay()
+end)
+-- Keep the head display attached over respawns while the module remains active.
+table.insert(connections, player.CharacterAdded:Connect(function()
+    task.defer(updateStunDisplay)
+end))
 
 -- on by default (a saved config overrides these)
 watermarkMod.set(true)
@@ -3152,63 +3308,170 @@ local function normalizeProfileName(value)
     return string.sub(safe, 1, 24)
 end
 
+-- Prefer flat files as the canonical paths. They do not depend on the
+-- executor correctly supporting folders across separate script executions.
 local function profilePath(profile)
-    if profile == "default" then return CONFIG_PATH end
-    if canFolder then return "TrueSight/" .. profile .. ".json" end
+    if profile == "default" then return "TrueSightConfig.json" end
     return "TrueSight_" .. profile .. ".json"
 end
 
 local function readConfig(profileName)
     local profile = normalizeProfileName(profileName or currentProfile)
-    if profile == "" then return nil end
-    local path = profilePath(profile)
-    if not canFile then return nil end
-    if canCheckFile then
-        local existsOk, exists = pcall(isfile, path)
-        if profile == "default" and (not existsOk or not exists) then
-            local legacyPath = canFolder and "VisualClient/config.json" or "VisualClientConfig.json"
-            local legacyOk, legacyExists = pcall(isfile, legacyPath)
-            if legacyOk and legacyExists then
-                path = legacyPath
-            elseif existsOk and not exists then
-                return nil
-            end
-        elseif existsOk and not exists then
-            return nil
+    if profile == "" or not canFile then return nil end
+
+    -- Try both folder and flat-file layouts. Some executor environments expose
+    -- makefolder/isfolder differently between sessions, so relying on one path
+    -- can make a valid selected profile look like it was never saved.
+    local paths = {}
+    local seen = {}
+    local function addPath(path)
+        if path and not seen[path] then
+            seen[path] = true
+            table.insert(paths, path)
         end
     end
-    local ok, data = pcall(function()
-        return HttpService:JSONDecode(readfile(path))
-    end)
-    if ok and type(data) == "table" then return data end
+    addPath(profilePath(profile))
+    if profile == "default" then
+        addPath("TrueSight/config.json")
+        addPath("TrueSightConfig.json")
+        addPath("VisualClient/config.json")
+        addPath("VisualClientConfig.json")
+    else
+        addPath("TrueSight/" .. profile .. ".json")
+        addPath("TrueSight_" .. profile .. ".json")
+    end
+
+    for _, path in ipairs(paths) do
+        -- Do not gate readfile behind isfile(): some executors report false for
+        -- valid paths or implement isfile inconsistently. A protected read is
+        -- a more reliable existence check.
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(readfile(path))
+        end)
+        if ok and type(data) == "table" then return data end
+    end
     return nil
 end
 
-local AUTOLOAD_PATH = canFolder and "TrueSight/autoload.txt" or "TrueSightAutoLoad.txt"
-local function getAutoLoadProfile()
-    if not canFile then return "default" end
-    local profile = "default"
-    pcall(function()
-        if canCheckFile and not isfile(AUTOLOAD_PATH) then return end
-        local value = readfile(AUTOLOAD_PATH)
-        local normalized = normalizeProfileName(value)
-        if normalized ~= "" then profile = normalized end
+-- Canonical auto-load marker and self-contained snapshot are flat files so
+-- executors can reuse them across separate executions.
+local AUTOLOAD_PATH = "TrueSightAutoLoad.txt"
+local STARTUP_CONFIG_PATH = "TrueSightStartupConfig.json"
+local AUTOLOAD_MARKER_PATHS = {AUTOLOAD_PATH, "TrueSight/autoload.txt"}
+
+local function timestampMillis()
+    local ok, value = pcall(function()
+        return DateTime.now().UnixTimestampMillis
     end)
+    if ok and type(value) == "number" then return value end
+    return os.time() * 1000
+end
+
+local function parseAutoLoadMarker(value)
+    if type(value) ~= "string" then return nil, 0 end
+    -- New format is "profile|timestamp"; plain profile names from older script
+    -- versions remain supported and are treated as older than timestamped data.
+    local rawProfile, rawStamp = string.match(value, "^(.-)|(%d+)$")
+    if not rawProfile then rawProfile = value end
+    local profile = normalizeProfileName(rawProfile)
+    if profile == "" then return nil, 0 end
+    return profile, tonumber(rawStamp) or 0
+end
+
+-- Read every marker and select the most recently written one. This also allows
+-- an alternate path to work if a particular executor blocks one file location.
+local function readAutoLoadMarker()
+    if not canFile then return nil, 0 end
+    local bestProfile, bestStamp = nil, -1
+    for _, path in ipairs(AUTOLOAD_MARKER_PATHS) do
+        local ok, value = pcall(readfile, path)
+        if ok and type(value) == "string" then
+            local profile, stamp = parseAutoLoadMarker(value)
+            if profile and stamp > bestStamp then
+                bestProfile, bestStamp = profile, stamp
+            end
+        end
+    end
+    return bestProfile, bestStamp >= 0 and bestStamp or 0
+end
+
+local function readStartupSnapshot()
+    if not canFile then return nil, nil, 0 end
+    local ok, contents = pcall(readfile, STARTUP_CONFIG_PATH)
+    if not ok or type(contents) ~= "string" then return nil, nil, 0 end
+    local decodeOk, data = pcall(function()
+        return HttpService:JSONDecode(contents)
+    end)
+    if not decodeOk or type(data) ~= "table" then return nil, nil, 0 end
+    local profile = normalizeProfileName(data.profile)
+    if profile == "" then profile = nil end
+    local stamp = tonumber(data.selectionTimestamp) or 0
+    return data, profile, stamp
+end
+
+local function getAutoLoadSelection()
+    if not canFile then return "default", 0, "default" end
+    local markerProfile, markerStamp = readAutoLoadMarker()
+    local _, snapshotProfile, snapshotStamp = readStartupSnapshot()
+
+    -- Timestamp comparison prevents a stale marker or stale snapshot from
+    -- undoing a newer selection. On ties, prefer the marker (legacy scripts).
+    if snapshotProfile and snapshotStamp > markerStamp then
+        return snapshotProfile, snapshotStamp, "snapshot"
+    end
+    if markerProfile then return markerProfile, markerStamp, "marker" end
+    if snapshotProfile then return snapshotProfile, snapshotStamp, "snapshot" end
+    return "default", 0, "default"
+end
+
+local function getAutoLoadProfile()
+    local profile = getAutoLoadSelection()
     return profile
 end
+
+local function writeVerified(path, contents)
+    local writeOk = pcall(function() writefile(path, contents) end)
+    if not writeOk then return false end
+    local verifyOk, verifyValue = pcall(readfile, path)
+    return verifyOk and verifyValue == contents
+end
+
 local function setAutoLoadProfile(profileName)
     if not canFile then return false end
     local profile = normalizeProfileName(profileName or "default")
     if profile == "" then return false end
-    local ok = pcall(function()
-        if canFolder then
-            local folderExists = false
-            pcall(function() folderExists = isfolder("TrueSight") end)
-            if not folderExists then pcall(makefolder, "TrueSight") end
-        end
-        writefile(AUTOLOAD_PATH, profile)
+
+    -- Validate the named profile before making it the startup selection.
+    local data = readConfig(profile)
+    if type(data) ~= "table" then return false end
+
+    local _, previousStamp = getAutoLoadSelection()
+    local selectedAt = math.max(timestampMillis(), (previousStamp or 0) + 1)
+    data.profile = profile
+    data.selectionTimestamp = selectedAt
+    local encodedOk, snapshotJson = pcall(function()
+        return HttpService:JSONEncode(data)
     end)
-    return ok
+    if not encodedOk then return false end
+
+    -- Write the same timestamped selection to both files. At next startup the
+    -- newest successful write wins, even if one path failed and contains an
+    -- older profile name.
+    local markerValue = profile .. "|" .. tostring(selectedAt)
+    local markerOk = false
+    for _, path in ipairs(AUTOLOAD_MARKER_PATHS) do
+        local ok, result = pcall(function()
+            if string.sub(path, 1, 10) == "TrueSight/" and canFolder then
+                local folderExists = false
+                pcall(function() folderExists = isfolder("TrueSight") end)
+                if not folderExists then pcall(makefolder, "TrueSight") end
+            end
+            return writeVerified(path, markerValue)
+        end)
+        if ok and result then markerOk = true end
+    end
+    local snapshotOk = writeVerified(STARTUP_CONFIG_PATH, snapshotJson)
+    return markerOk or snapshotOk
 end
 
 saveConfig = function(profileName)
@@ -3216,7 +3479,6 @@ saveConfig = function(profileName)
     local profile = normalizeProfileName(profileName or currentProfile)
     if profile == "" then return false end
     currentProfile = profile
-    local path = profilePath(profile)
 
     local data = {
         version = 1,
@@ -3248,73 +3510,136 @@ saveConfig = function(profileName)
         end
     end
 
-    local ok = pcall(function()
-        if canFolder then
-            local folderExists = false
-            pcall(function() folderExists = isfolder("TrueSight") end)
-            if not folderExists then
-                pcall(makefolder, "TrueSight")
+    local encodedOk, encoded = pcall(function()
+        return HttpService:JSONEncode(data)
+    end)
+    if not encodedOk then return false end
+
+    local paths = {}
+    local seen = {}
+    local function addPath(path)
+        if path and not seen[path] then
+            seen[path] = true
+            table.insert(paths, path)
+        end
+    end
+    addPath(profilePath(profile))
+    if profile == "default" then
+        addPath("TrueSight/config.json")
+        addPath("TrueSightConfig.json")
+    else
+        addPath("TrueSight/" .. profile .. ".json")
+        addPath("TrueSight_" .. profile .. ".json")
+    end
+
+    for _, path in ipairs(paths) do
+        local writeOk = pcall(function()
+            if string.sub(path, 1, 10) == "TrueSight/" and canFolder then
+                local folderExists = false
+                pcall(function() folderExists = isfolder("TrueSight") end)
+                if not folderExists then pcall(makefolder, "TrueSight") end
+            end
+            writefile(path, encoded)
+        end)
+        if writeOk then
+            local verifyOk, contents = pcall(readfile, path)
+            if verifyOk and contents == encoded then
+                -- Keep the self-contained startup copy in sync whenever the
+                -- currently selected auto-load profile is saved/auto-saved.
+                local selectedOk, selectedProfile, selectedStamp = pcall(function()
+                    return getAutoLoadSelection()
+                end)
+                if selectedOk and selectedProfile == profile then
+                    local snapshotData = data
+                    snapshotData.profile = profile
+                    snapshotData.selectionTimestamp = selectedStamp or 0
+                    local snapshotJsonOk, snapshotJson = pcall(function()
+                        return HttpService:JSONEncode(snapshotData)
+                    end)
+                    if snapshotJsonOk then
+                        pcall(writeVerified, STARTUP_CONFIG_PATH, snapshotJson)
+                    end
+                end
+                return true
             end
         end
-        writefile(path, HttpService:JSONEncode(data))
-    end)
-    return ok
+    end
+    return false
 end
 
 local function applyConfig(data)
+    if type(data) ~= "table" then return false end
     configLoading = true
+    local applied = true
 
-    if type(data.accent) == "number" and presets[data.accent] then
-        setAccentIndex(data.accent)
-    end
-
-    -- settings first, so modules switch on with their saved values
-    if type(data.values) == "table" then
-        for key, v in pairs(data.values) do
-            local e = configEntries[key]
-            if e then pcall(e.set, v) end
+    local ok, err = pcall(function()
+        if type(data.accent) == "number" and presets[data.accent] then
+            pcall(setAccentIndex, data.accent)
         end
-    end
 
-    if type(data.menuKey) == "string" then
-        local ok, kc = pcall(function() return Enum.KeyCode[data.menuKey] end)
-        if ok and kc then
-            keyUiState.menuKey = kc
-            keyUiState.updateKeyUi()
-        end
-    end
-
-    if type(data.panels) == "table" then
-        for title, pos in pairs(data.panels) do
-            local panel = panelRegistry[title]
-            if title ~= "Config" and panel and type(pos) == "table"
-                and type(pos.x) == "number" and type(pos.y) == "number" then
-                panel.Position = UDim2.fromOffset(pos.x, pos.y)
+        -- Restore setting values before enabling modules, so each module starts
+        -- using the saved configuration rather than its default settings.
+        if type(data.values) == "table" then
+            for key, value in pairs(data.values) do
+                local entry = configEntries[key]
+                if entry then
+                    local setOk, setErr = pcall(entry.set, value)
+                    if not setOk then
+                        warn("[TrueSight] Could not apply setting " .. tostring(key) .. ": " .. tostring(setErr))
+                    end
+                end
             end
         end
-    end
 
-    -- FPS and Ping share one draggable Stats frame, so one saved position
-    -- restores both trackers together.
-    if type(data.statsPosition) == "table"
-        and type(data.statsPosition.x) == "number"
-        and type(data.statsPosition.y) == "number" then
-        statsFrame.Position = UDim2.fromOffset(
-            data.statsPosition.x, data.statsPosition.y)
-    end
-
-    if type(data.modules) == "table" then
-        for _, m in ipairs(modules) do
-            local want = data.modules[m.name]
-            if want == nil and m.name == "Desync Box" then
-                want = data.modules["Own Position Estimate"]
-                if want == nil then want = data.modules["Desync Tracker"] end
+        if type(data.menuKey) == "string" then
+            local keyOk, kc = pcall(function() return Enum.KeyCode[data.menuKey] end)
+            if keyOk and kc then
+                keyUiState.menuKey = kc
+                pcall(keyUiState.updateKeyUi)
             end
-            if type(want) == "boolean" then m.set(want) end
         end
-    end
+
+        if type(data.panels) == "table" then
+            for title, pos in pairs(data.panels) do
+                local panel = panelRegistry[title]
+                if title ~= "Config" and panel and type(pos) == "table"
+                    and type(pos.x) == "number" and type(pos.y) == "number" then
+                    pcall(function() panel.Position = UDim2.fromOffset(pos.x, pos.y) end)
+                end
+            end
+        end
+
+        if type(data.statsPosition) == "table"
+            and type(data.statsPosition.x) == "number"
+            and type(data.statsPosition.y) == "number" then
+            pcall(function()
+                statsFrame.Position = UDim2.fromOffset(data.statsPosition.x, data.statsPosition.y)
+            end)
+        end
+
+        if type(data.modules) == "table" then
+            for _, module in ipairs(modules) do
+                local want = data.modules[module.name]
+                if want == nil and module.name == "Desync Box" then
+                    want = data.modules["Own Position Estimate"]
+                    if want == nil then want = data.modules["Desync Tracker"] end
+                end
+                if type(want) == "boolean" then
+                    local setOk, setErr = pcall(module.set, want)
+                    if not setOk then
+                        warn("[TrueSight] Could not apply module " .. tostring(module.name) .. ": " .. tostring(setErr))
+                    end
+                end
+            end
+        end
+    end)
 
     configLoading = false
+    if not ok then
+        applied = false
+        warn("[TrueSight] Config application failed: " .. tostring(err))
+    end
+    return applied
 end
 
 -- Persistent on-screen feedback for config commands and saves.
@@ -3447,7 +3772,10 @@ autoLoadBtn = addAction(configPanel, "Set Auto-Load Profile", function()
     elseif not readConfig(profile) then
         flash(autoLoadBtn, "Profile not found", "Set Auto-Load Profile")
     elseif setAutoLoadProfile(profile) then
-        flash(autoLoadBtn, "Auto-load: " .. profile, "Set Auto-Load Profile")
+        currentProfile = profile
+        profileInput.Text = profile
+        refreshAutoLoadButton()
+        flash(autoLoadBtn, "Set: " .. profile, "Auto-Load: " .. profile)
         notifyConfig("Startup profile set to " .. profile, false)
     else
         flash(autoLoadBtn, "Could not save", "Set Auto-Load Profile")
@@ -3486,15 +3814,62 @@ end)
 
 addAction(clientPanel, "Unload Client", cleanup)
 
--- Auto-load the selected profile on start (set from Config > Set Auto-Load Profile).
+-- Auto-load after the UI and module callbacks have finished initializing. The
+-- dedicated snapshot is authoritative when present; the selected profile file
+-- is the fallback if the snapshot cannot be decoded.
 if canFile then
-    local startupProfile = getAutoLoadProfile()
-    local data = readConfig(startupProfile)
-    if data then
-        currentProfile = startupProfile
-        applyConfig(data)
-        notifyConfig("Config auto-loaded: " .. startupProfile, false)
-    end
+    task.defer(function()
+        -- Allow the GUI, module rows and setting registration to finish first.
+        task.wait(0.8)
+
+        -- A saved marker takes precedence over the cached snapshot. Only use
+        -- the snapshot when it belongs to the selected profile, or when there
+        -- is no marker and the snapshot is the only saved startup selection.
+        local startupProfile, selectedStamp, selectionSource = getAutoLoadSelection()
+        local snapshot, snapshotProfile, snapshotStamp = readStartupSnapshot()
+        local data = nil
+        local loadedFromSnapshot = false
+
+        -- If the snapshot is the newest surviving selection, it is the chosen
+        -- config itself. Otherwise prefer the selected profile file, falling
+        -- back to a matching snapshot only if that profile file is unavailable.
+        if selectionSource == "snapshot" and snapshot and snapshotProfile == startupProfile then
+            data = snapshot
+            loadedFromSnapshot = true
+        else
+            data = readConfig(startupProfile)
+            if not data and snapshot and snapshotProfile == startupProfile then
+                data = snapshot
+                loadedFromSnapshot = true
+            end
+        end
+
+        if data then
+            currentProfile = startupProfile
+            if profileInput then profileInput.Text = startupProfile end
+
+            local applyOk = applyConfig(data)
+            -- A few visual modules depend on Character/PlayerGui finishing their
+            -- startup. Retry twice after short settling windows.
+            task.wait(0.35)
+            local secondApplyOk = applyConfig(data)
+            task.wait(0.5)
+            local thirdApplyOk = applyConfig(data)
+
+            if applyOk and secondApplyOk and thirdApplyOk then
+                notifyConfig("Config auto-loaded: " .. startupProfile .. (loadedFromSnapshot and " (snapshot)" or ""), false)
+                print("[TrueSight] Startup config applied: " .. startupProfile
+                    .. " (source=" .. tostring(loadedFromSnapshot and "snapshot" or "profile file")
+                    .. ", selection=" .. tostring(selectionSource) .. ", timestamp=" .. tostring(selectedStamp) .. ")")
+            else
+                notifyConfig("Config found but application failed; see console", true)
+                warn("[TrueSight] Startup config application failed for profile: " .. startupProfile)
+            end
+        else
+            notifyConfig("Auto-load profile not found: " .. startupProfile, true)
+            warn("[TrueSight] Could not read auto-load profile: " .. startupProfile)
+        end
+    end)
 end
 end)()
 
