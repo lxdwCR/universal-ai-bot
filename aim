@@ -3183,31 +3183,59 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
     local elapsed = 0
     local lastAttempt = -math.huge
     local tapInProgress = false
+    local wasRunning = false
+    local walkSince = nil
+    local retryDelay = 0.18
 
     sprintConn = RunService.Heartbeat:Connect(function(dt)
         elapsed += dt
-        if elapsed < 0.05 then return end
+        if elapsed < 0.025 then return end
         elapsed = 0
 
         local character = player.Character
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
         if not humanoid or humanoid.Health <= 0 then
+            wasRunning = false
+            walkSince = nil
             return
         end
 
         local focused = UserInputService:GetFocusedTextBox()
         local moving = humanoid.MoveDirection.Magnitude > 0.05
         local speed = humanoid.WalkSpeed
+        -- In YBA, running is generally above 19; low speeds can mean a stun,
+        -- block recovery, or another temporary movement lock.
         local running = speed >= 19
         local walkingWhileMoving = moving and speed >= 5 and not running
 
-        -- Keep checking rather than only tapping on the first movement frame.
-        -- If the game cancels sprint or the first input is missed, retry while
-        -- the character is still moving at walk speed. The longer retry window
-        -- gives YBA time to update WalkSpeed and avoids rapidly toggling sprint.
-        if not focused and walkingWhileMoving and not tapInProgress
-            and (os.clock() - lastAttempt) >= 0.65 then
-            lastAttempt = os.clock()
+        if running then
+            wasRunning = true
+            walkSince = nil
+        elseif walkingWhileMoving then
+            -- Start a fresh recovery window whenever sprint drops back to walk.
+            -- Use a very short settle window so sprint resumes promptly after
+            -- block recovery, while still avoiding input during low-speed locks.
+            if wasRunning or walkSince == nil then
+                walkSince = os.clock()
+            end
+            wasRunning = false
+        else
+            -- Not moving or movement is locked; wait for movement to recover.
+            walkSince = nil
+            if speed < 5 then wasRunning = false end
+        end
+
+        if focused or not walkingWhileMoving or tapInProgress or not walkSince then
+            return
+        end
+
+        local now = os.clock()
+        local elapsedWalking = now - walkSince
+        local sinceAttempt = now - lastAttempt
+        -- Tap as soon as walking returns, then retry quickly only while
+        -- WalkSpeed still indicates sprint failed.
+        if elapsedWalking >= 0.03 and sinceAttempt >= retryDelay then
+            lastAttempt = now
             tapInProgress = true
             task.spawn(function()
                 local sent = tapSprintKey(sprintKeyName)
