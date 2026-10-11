@@ -188,6 +188,8 @@ end)
 local trailObjects = {}
 local activeTrail
 local trailLifetime = 0.65
+local trailStyle = 1
+local trailStyleNames = {"Ribbon", "Lightning", "Flower"}
 
 local function trailColor(c)
     return ColorSequence.new(c, c:Lerp(Color3.new(1, 1, 1), 0.55))
@@ -222,6 +224,31 @@ local function addTrail(character)
     trail.FaceCamera = true
     trail.LightEmission = 0.8
     trail.Color = trailColor(accent)
+    if trailStyle == 2 then
+        trail.WidthScale = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.9),
+            NumberSequenceKeypoint.new(0.2, 0.25),
+            NumberSequenceKeypoint.new(0.5, 0.8),
+            NumberSequenceKeypoint.new(0.7, 0.2),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        trail.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+        trail.TextureMode = Enum.TextureMode.Wrap
+        trail.TextureLength = 1.2
+    elseif trailStyle == 3 then
+        trail.WidthScale = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.2),
+            NumberSequenceKeypoint.new(0.25, 1.1),
+            NumberSequenceKeypoint.new(0.5, 0.25),
+            NumberSequenceKeypoint.new(0.75, 1.1),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        trail.Texture = "rbxasset://textures/particles/flare_main.dds"
+        trail.TextureMode = Enum.TextureMode.Stretch
+    else
+        trail.WidthScale = NumberSequence.new(1)
+        trail.Texture = ""
+    end
     trail.Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 0.15),
         NumberSequenceKeypoint.new(1, 1),
@@ -1953,6 +1980,10 @@ trailMod.slider("Length", 0.2, 2, 0.65, 0.05, function(v)
     trailLifetime = v
     if activeTrail then activeTrail.Lifetime = v end
 end)
+trailMod.cycle("Style", trailStyleNames, trailStyle, function(i)
+    trailStyle = i
+    if trailMod.enabled and player.Character then addTrail(player.Character) end
+end)
 
 local jumpMod = addModule(visualPanel, "Jump Circles", function(on)
     if on then
@@ -2133,25 +2164,46 @@ end)
 vignetteMod.slider("Strength", 0.2, 1, 0.6, 0.05, setVignetteStrength)
 
 local originalEffects = {}
-addModule(renderPanel, "FPS Boost", function(on)
+local originalGlobalShadows
+local function setLowEffects(on)
     if on then
         table.clear(originalEffects)
-        for _, obj in ipairs(Lighting:GetDescendants()) do
-            local cosmeticEffect = obj:IsA("BloomEffect")
-                or obj:IsA("BlurEffect")
-                or obj:IsA("SunRaysEffect")
-            if cosmeticEffect and not string.find(obj.Name, "^TrueSight") then
-                originalEffects[obj] = obj.Enabled
-                obj.Enabled = false
+        originalGlobalShadows = Lighting.GlobalShadows
+        Lighting.GlobalShadows = false
+        -- Avoid repeatedly scanning the entire world; cache only render-heavy
+        -- visual instances once, and restore their exact previous state later.
+        local candidates = workspace:GetDescendants()
+        for _, obj in ipairs(Lighting:GetDescendants()) do table.insert(candidates, obj) end
+        for _, obj in ipairs(candidates) do
+            if not string.find(obj.Name, "^TrueSight") then
+                if obj:IsA("BloomEffect") or obj:IsA("BlurEffect")
+                    or obj:IsA("SunRaysEffect") or obj:IsA("DepthOfFieldEffect")
+                    or obj:IsA("ColorCorrectionEffect") then
+                    originalEffects[obj] = obj.Enabled
+                    obj.Enabled = false
+                elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") then
+                    originalEffects[obj] = obj.Enabled
+                    obj.Enabled = false
+                elseif obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
+                    originalEffects[obj] = obj.Enabled
+                    obj.Enabled = false
+                end
             end
         end
     else
         for obj, wasEnabled in pairs(originalEffects) do
-            if obj and obj.Parent then obj.Enabled = wasEnabled end
+            if obj and obj.Parent then
+                pcall(function() obj.Enabled = wasEnabled end)
+            end
         end
         table.clear(originalEffects)
+        if originalGlobalShadows ~= nil then
+            Lighting.GlobalShadows = originalGlobalShadows
+            originalGlobalShadows = nil
+        end
     end
-end)
+end
+addModule(renderPanel, "FPS Boost", setLowEffects)
 
 ;(function()
 local cross = Instance.new("TextLabel")
@@ -2271,6 +2323,80 @@ local function restoreSkybox()
 end
 local skyboxMod = addModule(worldPanel, "Custom Skybox", function(on)
     if on then applySkybox() else restoreSkybox() end
+end)
+-- Ready-made six-face skyboxes using Roblox image assets. The IDs are
+-- preset image assets; access/availability can vary by experience or moderation.
+local skyboxPresets = {
+    ["Purple Nebula"] = {"159454299", "159454296", "159454293", "159454286", "159454300", "159454288"},
+    ["Night Sky"] = {"12064107", "12064152", "12064121", "12063984", "12064115", "12064131"},
+    ["Cabin Sky"] = {"162001887", "161998893", "162001897", "162001904", "162001919", "162001926"},
+}
+local skyboxPresetNames = {"Purple Nebula", "Night Sky", "Cabin Sky"}
+local skyboxPresetIndex = 1
+local function applySkyboxPreset(index)
+    skyboxPresetIndex = index
+    skyboxId = table.concat(skyboxPresets[skyboxPresetNames[index]], ",")
+    if skyboxMod and skyboxMod.enabled then
+        restoreSkybox()
+        applySkybox()
+    end
+end
+skyboxMod.cycle("Roblox Skybox Preset", skyboxPresetNames, skyboxPresetIndex, applySkyboxPreset)
+local moodNames = {"Classic", "Nebula", "Aurora Borealis", "Cosmic Night"}
+local moodIndex = 1
+local moodAtmosphere
+local moodCorrection
+local moodOriginal
+local function applySkyMood(index)
+    moodIndex = index
+    if not moodOriginal then
+        moodOriginal = {Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient,
+            Brightness = Lighting.Brightness, ClockTime = Lighting.ClockTime}
+    end
+    if not moodAtmosphere or not moodAtmosphere.Parent then
+        moodAtmosphere = Lighting:FindFirstChild("TrueSightSkyMoodAtmosphere") or Instance.new("Atmosphere")
+        moodAtmosphere.Name = "TrueSightSkyMoodAtmosphere"
+        moodAtmosphere.Parent = Lighting
+    end
+    if not moodCorrection or not moodCorrection.Parent then
+        moodCorrection = Instance.new("ColorCorrectionEffect")
+        moodCorrection.Name = "TrueSightSkyMoodColor"
+        moodCorrection.Parent = Lighting
+    end
+    if index == 1 then
+        moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.25, 0, Color3.fromRGB(199, 214, 255)
+        moodCorrection.TintColor, moodCorrection.Saturation = Color3.new(1, 1, 1), 0
+        Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.Brightness, Lighting.ClockTime =
+            moodOriginal.Ambient, moodOriginal.OutdoorAmbient, moodOriginal.Brightness, moodOriginal.ClockTime
+    elseif index == 2 then
+        moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.42, 2.2, Color3.fromRGB(120, 65, 190)
+        moodCorrection.TintColor, moodCorrection.Saturation = Color3.fromRGB(190, 155, 255), 0.25
+        Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.ClockTime = Color3.fromRGB(65, 35, 115), Color3.fromRGB(50, 25, 100), 0
+    elseif index == 3 then
+        moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.32, 1.5, Color3.fromRGB(90, 255, 205)
+        moodCorrection.TintColor, moodCorrection.Saturation = Color3.fromRGB(150, 255, 220), 0.3
+        Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.ClockTime = Color3.fromRGB(30, 100, 90), Color3.fromRGB(20, 80, 80), 1
+    else
+        moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.5, 2.5, Color3.fromRGB(50, 65, 155)
+        moodCorrection.TintColor, moodCorrection.Saturation = Color3.fromRGB(125, 145, 255), 0.15
+        Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.ClockTime = Color3.fromRGB(20, 25, 75), Color3.fromRGB(15, 20, 65), 0
+    end
+end
+local skyMoodMod = addModule(worldPanel, "Sky Mood Presets", function(on)
+    if on then
+        applySkyMood(moodIndex)
+    else
+        if moodOriginal then
+            Lighting.Ambient, Lighting.OutdoorAmbient = moodOriginal.Ambient, moodOriginal.OutdoorAmbient
+            Lighting.Brightness, Lighting.ClockTime = moodOriginal.Brightness, moodOriginal.ClockTime
+        end
+        if moodAtmosphere then moodAtmosphere:Destroy() moodAtmosphere = nil end
+        if moodCorrection then moodCorrection:Destroy() moodCorrection = nil end
+    end
+end)
+skyMoodMod.cycle("Preset", moodNames, moodIndex, function(i)
+    moodIndex = i
+    if skyMoodMod.enabled then applySkyMood(i) end
 end)
 addTextInput(worldPanel, "Skybox asset ID", "One image ID or six comma-separated IDs...", "",
     function(value)
@@ -2414,6 +2540,379 @@ local watermarkMod = addModule(hudPanel, "Watermark", function(on)
     watermark.Visible = on
 end)
 watermarkMod.hidden = true
+
+-- Visible-only player labels. YBA's stand state is not a public Roblox API,
+-- so stand detection checks common attributes/values and stand model names.
+local nameTagObjects = {}
+local nameTagLoop
+local nameTagsMod
+local function removeNameTag(plr)
+    local guiObject = nameTagObjects[plr]
+    if guiObject then
+        if guiObject.Parent then guiObject:Destroy() end
+        nameTagObjects[plr] = nil
+    end
+end
+local function createNameTag(plr)
+    if plr == player or nameTagObjects[plr] then return end
+    local character = plr.Character
+    local head = character and character:FindFirstChild("Head")
+    if not head then return end
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "TrueSightNameTag"
+    billboard.Adornee = head
+    billboard.Size = UDim2.fromOffset(220, 48)
+    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+    billboard.AlwaysOnTop = false
+    billboard.Enabled = false
+    billboard.Parent = gui
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.Font = FONTB
+    label.TextSize = 12
+    label.TextColor3 = TEXT
+    label.TextStrokeTransparency = 0.35
+    label.RichText = true
+    label.Parent = billboard
+    nameTagObjects[plr] = billboard
+end
+local function setNameTags(on)
+    if nameTagLoop then nameTagLoop:Disconnect() nameTagLoop = nil end
+    if not on then
+        for plr in pairs(nameTagObjects) do removeNameTag(plr) end
+        return
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do createNameTag(plr) end
+    nameTagLoop = RunService.Heartbeat:Connect(function()
+        local camera = cam()
+        if not camera then return end
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = {player.Character}
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= player then
+                local character = plr.Character
+                local head = character and character:FindFirstChild("Head")
+                local hum = character and character:FindFirstChildOfClass("Humanoid")
+                local tag = nameTagObjects[plr]
+                if head and hum and hum.Health > 0 then
+                    if not tag or not tag.Parent then
+                        createNameTag(plr)
+                        tag = nameTagObjects[plr]
+                    end
+                    if tag then
+                        local point, onScreen = camera:WorldToViewportPoint(head.Position)
+                        local visible = onScreen and point.Z > 0
+                        if visible then
+                            local direction = head.Position - camera.CFrame.Position
+                            local hit = workspace:Raycast(camera.CFrame.Position, direction, params)
+                            visible = (not hit) or hit.Instance:IsDescendantOf(character)
+                        end
+                        tag.Enabled = visible
+                        if visible then
+                            local standName = nil
+                            local standKeys = {"StandName", "Stand", "CurrentStand", "StandType"}
+                            for _, key in ipairs(standKeys) do
+                                local ok, value = pcall(function() return plr:GetAttribute(key) end)
+                                if ok and type(value) == "string" and value ~= "" then standName = value break end
+                                ok, value = pcall(function() return character:GetAttribute(key) end)
+                                if ok and type(value) == "string" and value ~= "" then standName = value break end
+                            end
+                            if not standName then
+                                for _, container in ipairs({plr, character}) do
+                                    for _, obj in ipairs(container:GetDescendants()) do
+                                        if (obj:IsA("StringValue") or obj:IsA("ObjectValue")) then
+                                            local n = string.lower(obj.Name)
+                                            if string.find(n, "stand", 1, true) then
+                                                local value = obj.Value
+                                                if typeof(value) == "Instance" then value = value.Name end
+                                                if type(value) == "string" and value ~= "" then standName = value break end
+                                            end
+                                        end
+                                    end
+                                    if standName then break end
+                                end
+                            end
+                            if not standName then
+                                -- In many YBA builds the summoned Stand is a child Model
+                                -- of the character and its name is the actual Stand name.
+                                for _, obj in ipairs(character:GetChildren()) do
+                                    if obj:IsA("Model") and obj.Name ~= "" then
+                                        local n = string.lower(obj.Name)
+                                        if not string.find(n, "effect", 1, true)
+                                            and not string.find(n, "hitbox", 1, true)
+                                            and not string.find(n, "dummy", 1, true) then
+                                            standName = obj.Name:gsub("[Ss]tand", "")
+                                            if standName == "" then standName = obj.Name end
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+                            standName = standName or "Unknown"
+                            tag.Label.TextColor3 = accent
+                            tag.Label.Text = string.format(
+                                '<font color="#%s">%s</font>  <font color="#FFFFFF">HP %d/%d</font>\n<font color="#B8C8D8">Stand: %s</font>',
+                                accent:ToHex(), plr.DisplayName,
+                                math.floor(hum.Health + 0.5), math.floor(hum.MaxHealth + 0.5),
+                                tostring(standName):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+                        end
+                    end
+                elseif tag then
+                    tag.Enabled = false
+                end
+            end
+        end
+    end)
+end
+nameTagsMod = addModule(hudPanel, "Player Name Tags", setNameTags)
+nameTagsMod.hidden = false
+table.insert(connections, Players.PlayerRemoving:Connect(removeNameTag))
+table.insert(connections, Players.PlayerAdded:Connect(function(plr)
+    plr.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        if nameTagsMod and nameTagsMod.enabled then createNameTag(plr) end
+    end)
+end))
+
+-- YBA stun timer. Detection is best-effort: YBA may not replicate its internal
+-- stun state to the local client. The label itself is draggable.
+local stunTimerLabel = Instance.new("TextLabel")
+stunTimerLabel.Name = "TrueSightStunTimer"
+stunTimerLabel.Size = UDim2.fromOffset(190, 30)
+stunTimerLabel.Position = UDim2.new(0.5, -95, 0.78, 0)
+stunTimerLabel.BackgroundColor3 = BG
+stunTimerLabel.BackgroundTransparency = 0.12
+stunTimerLabel.BorderSizePixel = 0
+stunTimerLabel.Font = FONTB
+stunTimerLabel.TextSize = 13
+stunTimerLabel.TextColor3 = TEXT
+stunTimerLabel.Text = "STUN: waiting for state"
+stunTimerLabel.Visible = false
+stunTimerLabel.Active = true
+stunTimerLabel.Selectable = true
+stunTimerLabel.Parent = gui
+corner(stunTimerLabel, 6)
+
+local stunDrag = {active = false, input = nil, start = nil, position = nil}
+stunTimerLabel.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        stunDrag.active = true
+        stunDrag.input = input
+        stunDrag.start = input.Position
+        stunDrag.position = stunTimerLabel.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then stunDrag.active = false end
+        end)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if not stunDrag.active then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        local delta = input.Position - stunDrag.start
+        local p = stunDrag.position
+        stunTimerLabel.Position = UDim2.new(p.X.Scale, p.X.Offset + delta.X, p.Y.Scale, p.Y.Offset + delta.Y)
+    end
+end)
+
+local stunTimerMod
+local stunStartedAt
+-- Fallback estimate when YBA only exposes a boolean/flag rather than a remaining timer.
+-- The estimate improves from measured stun lengths observed on this client during this session.
+local learnedStunDuration = 2.0
+local predictedStunDuration
+
+local function truthyStunValue(value)
+    if value == true then return true end
+    if type(value) == "number" then return value > 0 end
+    if type(value) == "string" then
+        local v = string.lower(value)
+        return v == "true" or v == "stunned" or v == "stun" or v == "hitstun"
+    end
+    return false
+end
+
+-- Look for game-provided timing fields. A plain Stunned=true flag tells us only
+-- whether stun is active, not how much time remains, so we separately look for
+-- names that specifically indicate a remaining countdown or end timestamp.
+local function getStunTimingSignals()
+    local character = player.Character
+    if not character then return nil, nil end
+    local remaining, duration
+    local function consider(name, value)
+        local key = string.lower(tostring(name)):gsub("[^%w]", "")
+        local number = tonumber(value)
+        if not number or number <= 0 or number > 120 then return end
+        if not string.find(key, "stun", 1, true) and not string.find(key, "hitstun", 1, true) then return end
+
+        local explicitRemaining = string.find(key, "remaining", 1, true)
+            or string.find(key, "timeleft", 1, true)
+            or string.find(key, "durationleft", 1, true)
+            or string.find(key, "countdown", 1, true)
+            or string.find(key, "timerleft", 1, true)
+        if explicitRemaining and number <= 60 then
+            remaining = remaining and math.min(remaining, number) or number
+            return
+        end
+
+        if string.find(key, "endtime", 1, true) or string.find(key, "until", 1, true)
+            or string.find(key, "endsat", 1, true) then
+            -- Different games use either server-clock or local-clock timestamps.
+            local ok, serverNow = pcall(function() return workspace:GetServerTimeNow() end)
+            local candidates = {}
+            if ok and type(serverNow) == "number" then table.insert(candidates, number - serverNow) end
+            table.insert(candidates, number - os.clock())
+            for _, left in ipairs(candidates) do
+                if left > 0 and left <= 60 then
+                    remaining = remaining and math.min(remaining, left) or left
+                end
+            end
+            return
+        end
+
+        -- Total-duration fields are useful to seed the fallback countdown, but
+        -- are not mistaken for remaining time.
+        if string.find(key, "duration", 1, true) and number <= 15 then
+            duration = duration and math.min(duration, number) or number
+        end
+    end
+
+    local function inspect(instance)
+        local ok, attributes = pcall(function() return instance:GetAttributes() end)
+        if ok then
+            for key, value in pairs(attributes) do consider(key, value) end
+        end
+    end
+
+    inspect(player)
+    inspect(character)
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then inspect(humanoid) end
+    for _, obj in ipairs(character:GetDescendants()) do
+        if obj:IsA("NumberValue") or obj:IsA("IntValue") or obj:IsA("StringValue") then
+            consider(obj.Name, obj.Value)
+        end
+        inspect(obj)
+    end
+    return remaining, duration
+end
+
+local function isActiveStunKey(name)
+    local key = string.lower(tostring(name)):gsub("[^%w]", "")
+    if not string.find(key, "stun", 1, true) then return false end
+    -- Duration/end-time metadata isn't proof that a stun is currently active.
+    if string.find(key, "duration", 1, true)
+        or string.find(key, "endtime", 1, true)
+        or string.find(key, "endsat", 1, true)
+        or string.find(key, "until", 1, true) then
+        return false
+    end
+    return true
+end
+
+local function isLocallyStunned()
+    local character = player.Character
+    if not character then return false, "no character" end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local keys = {"Stunned", "Stun", "IsStunned", "HitStun", "Hitstun", "InStun", "stunned", "stun"}
+    local function checkAttributes(instance)
+        for _, key in ipairs(keys) do
+            local ok, value = pcall(function() return instance:GetAttribute(key) end)
+            if ok and truthyStunValue(value) then return true end
+        end
+        local ok, attributes = pcall(function() return instance:GetAttributes() end)
+        if ok then
+            for key, value in pairs(attributes) do
+                if isActiveStunKey(key) and truthyStunValue(value) then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    if checkAttributes(character) or checkAttributes(player) or (humanoid and checkAttributes(humanoid)) then
+        return true, "stun flag"
+    end
+    for _, obj in ipairs(character:GetDescendants()) do
+        local lower = string.lower(obj.Name)
+        if (obj:IsA("BoolValue") or obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("StringValue")) then
+            if isActiveStunKey(obj.Name) and truthyStunValue(obj.Value) then
+                return true, "stun value"
+            end
+        end
+        if obj:IsA("Folder") or obj:IsA("Model") then
+            if (lower == "stun" or lower == "stunned" or lower == "hitstun") and #obj:GetChildren() > 0 then
+                return true, "stun container"
+            end
+        end
+    end
+    -- Movement-lock fallback can help detect some stuns, but may also trigger
+    -- during moves. Prefer an explicit YBA state whenever one is available.
+    if humanoid and humanoid.Health > 0 then
+        local jumpDisabled = humanoid.UseJumpPower and humanoid.JumpPower <= 1 or (not humanoid.UseJumpPower and humanoid.JumpHeight <= 0.1)
+        if humanoid.WalkSpeed <= 1 and jumpDisabled then
+            return true, "movement lock"
+        end
+    end
+    return false, "not detected"
+end
+
+local stunTimerConn
+stunTimerMod = addModule(hudPanel, "YBA Stun Timer", function(on)
+    if stunTimerConn then stunTimerConn:Disconnect() stunTimerConn = nil end
+    stunTimerLabel.Visible = on
+    stunStartedAt = nil
+    predictedStunDuration = nil
+    if on then
+        local elapsed = 0
+        stunTimerConn = RunService.Heartbeat:Connect(function(dt)
+            elapsed += dt
+            if elapsed < 0.08 then return end
+            elapsed = 0
+            local stunned = isLocallyStunned()
+            local explicitRemaining, signalDuration = getStunTimingSignals()
+            local now = os.clock()
+            if stunned then
+                if not stunStartedAt then
+                    stunStartedAt = now
+                    -- If the game exposes a total duration, use it; otherwise
+                    -- use the last observed duration (2s until we learn one).
+                    predictedStunDuration = math.clamp(signalDuration or learnedStunDuration, 0.25, 15)
+                end
+                local left
+                if explicitRemaining and explicitRemaining > 0 then
+                    left = explicitRemaining
+                    stunTimerLabel.Text = string.format("STUN: %.1fs LEFT", left)
+                else
+                    left = math.max(0, predictedStunDuration - (now - stunStartedAt))
+                    if left > 0 then
+                        stunTimerLabel.Text = string.format("STUN: ~%.1fs LEFT", left)
+                    else
+                        -- Detection is still active after our estimate expired.
+                        -- Never imply the stun ended until the detected flag clears.
+                        stunTimerLabel.Text = "STUN: ~0.0s LEFT"
+                    end
+                end
+                stunTimerLabel.TextColor3 = BAD
+            else
+                if stunStartedAt then
+                    local observed = now - stunStartedAt
+                    if observed >= 0.2 and observed <= 12 then
+                        -- Learn a smoothed fallback duration for later stuns.
+                        learnedStunDuration = math.clamp(learnedStunDuration * 0.55 + observed * 0.45, 0.25, 12)
+                    end
+                end
+                stunStartedAt = nil
+                predictedStunDuration = nil
+                stunTimerLabel.Text = "STUN: not detected"
+                stunTimerLabel.TextColor3 = TEXT
+            end
+        end)
+    end
+end)
+stunTimerMod.hidden = false
 
 -- on by default (a saved config overrides these)
 watermarkMod.set(true)
@@ -2616,6 +3115,10 @@ local function cleanup()
     verity.remove()
     unhookJump()
     removeGhost()
+    if nameTagLoop then nameTagLoop:Disconnect() nameTagLoop = nil end
+    for plr in pairs(nameTagObjects) do removeNameTag(plr) end
+    if moodAtmosphere then moodAtmosphere:Destroy() end
+    if moodCorrection then moodCorrection:Destroy() end
     correction:Destroy()
     blur:Destroy()
     if bloomCreated then
@@ -2679,6 +3182,33 @@ local function readConfig(profileName)
     end)
     if ok and type(data) == "table" then return data end
     return nil
+end
+
+local AUTOLOAD_PATH = canFolder and "TrueSight/autoload.txt" or "TrueSightAutoLoad.txt"
+local function getAutoLoadProfile()
+    if not canFile then return "default" end
+    local profile = "default"
+    pcall(function()
+        if canCheckFile and not isfile(AUTOLOAD_PATH) then return end
+        local value = readfile(AUTOLOAD_PATH)
+        local normalized = normalizeProfileName(value)
+        if normalized ~= "" then profile = normalized end
+    end)
+    return profile
+end
+local function setAutoLoadProfile(profileName)
+    if not canFile then return false end
+    local profile = normalizeProfileName(profileName or "default")
+    if profile == "" then return false end
+    local ok = pcall(function()
+        if canFolder then
+            local folderExists = false
+            pcall(function() folderExists = isfolder("TrueSight") end)
+            if not folderExists then pcall(makefolder, "TrueSight") end
+        end
+        writefile(AUTOLOAD_PATH, profile)
+    end)
+    return ok
 end
 
 saveConfig = function(profileName)
@@ -2905,6 +3435,26 @@ loadProfileBtn = addAction(configPanel, "Load Profile", function()
     end
 end)
 loadProfileBtn.LayoutOrder = 5
+local autoLoadBtn
+local function refreshAutoLoadButton()
+    if autoLoadBtn then autoLoadBtn.Text = "   Auto-Load: " .. getAutoLoadProfile() end
+end
+autoLoadBtn = addAction(configPanel, "Set Auto-Load Profile", function()
+    local profile = normalizeProfileName(profileInput.Text)
+    if profile == "" then profile = "default" end
+    if not canFile then
+        flash(autoLoadBtn, "No file access", "Set Auto-Load Profile")
+    elseif not readConfig(profile) then
+        flash(autoLoadBtn, "Profile not found", "Set Auto-Load Profile")
+    elseif setAutoLoadProfile(profile) then
+        flash(autoLoadBtn, "Auto-load: " .. profile, "Set Auto-Load Profile")
+        notifyConfig("Startup profile set to " .. profile, false)
+    else
+        flash(autoLoadBtn, "Could not save", "Set Auto-Load Profile")
+    end
+end)
+autoLoadBtn.LayoutOrder = 6
+refreshAutoLoadButton()
 
 -- Chat shortcuts: /config save, /config load, /config save <profile>,
 -- /config load <profile>. Chat messages are handled locally by this script.
@@ -2936,10 +3486,15 @@ end)
 
 addAction(clientPanel, "Unload Client", cleanup)
 
--- auto-load the saved config on start
+-- Auto-load the selected profile on start (set from Config > Set Auto-Load Profile).
 if canFile then
-    local data = readConfig()
-    if data then applyConfig(data) end
+    local startupProfile = getAutoLoadProfile()
+    local data = readConfig(startupProfile)
+    if data then
+        currentProfile = startupProfile
+        applyConfig(data)
+        notifyConfig("Config auto-loaded: " .. startupProfile, false)
+    end
 end
 end)()
 
