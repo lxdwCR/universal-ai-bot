@@ -18,6 +18,7 @@ local TeleportService = game:GetService("TeleportService")
 local Debris = game:GetService("Debris")
 local HttpService = game:GetService("HttpService")
 local Stats = game:GetService("Stats")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local function cam() return workspace.CurrentCamera end
@@ -445,6 +446,448 @@ end
 onAccent(function(c)
     if auraEmitter then auraEmitter.Color = auraColor(c) end
 end)
+
+------------------------------------------------------------------
+-- Stand Aura: copy currently loaded YBA stand/skin VFX locally
+-- This deliberately uses existing loaded effect instances instead of
+-- recoloured placeholder particles. Scan after the desired aura is visible.
+------------------------------------------------------------------
+local standAuraObjects = {}
+local standAuraRecords = {}
+local standAuraSources = {}
+local standAuraNames = {"Scan loaded effects first"}
+local standAuraIndex = 1
+local standAuraIntensity = 1
+local standAuraCycle
+local standAuraScanStatus
+
+local knownStandNames = {
+    "star platinum", "the world", "crazy diamond", "gold experience",
+    "king crimson", "killer queen", "magician's red", "hierophant green",
+    "silver chariot", "white album", "purple haze", "the hand",
+    "sticky fingers", "anubis", "weather report", "c-moon", "made in heaven",
+    "d4c", "tusk", "scary monsters", "soft & wet", "whitesnake",
+    "chariot requiem", "shadow the world", "red hot chili pepper",
+    "aerosmith", "stone free", "six pistols", "hermit purple",
+    "king crimson requiem", "gold experience requiem", "the world over heaven"
+}
+
+local function lowerName(v)
+    return string.lower(tostring(v or ""))
+end
+
+local function nameLooksLikeStand(name)
+    local n = lowerName(name)
+    if string.find(n, "stand", 1, true) then return true end
+    for _, standName in ipairs(knownStandNames) do
+        if string.find(n, standName, 1, true) then return true end
+    end
+    return false
+end
+
+local function isAuraNamed(inst)
+    local cur = inst
+    for _ = 1, 7 do
+        if not cur or cur == game then break end
+        local n = lowerName(cur.Name)
+        if string.find(n, "aura", 1, true)
+            or string.find(n, "ambient", 1, true)
+            or string.find(n, "idle", 1, true)
+            or string.find(n, "glow", 1, true)
+            or string.find(n, "energy", 1, true)
+            or string.find(n, "standfx", 1, true) then
+            return true
+        end
+        cur = cur.Parent
+    end
+    return false
+end
+
+local function isTrueSightEffect(inst)
+    local cur = inst
+    while cur and cur ~= game do
+        local n = tostring(cur.Name)
+        if string.find(n, "TrueSight", 1, true)
+            or string.find(n, "LocalAura", 1, true)
+            or string.find(n, "LocalJumpCircle", 1, true) then
+            return true
+        end
+        cur = cur.Parent
+    end
+    return false
+end
+
+local function isEffectCandidate(inst)
+    local class = inst.ClassName
+    if class ~= "ParticleEmitter" and class ~= "Trail" and class ~= "Beam"
+        and class ~= "Fire" and class ~= "Smoke" and class ~= "Sparkles"
+        and class ~= "PointLight" and class ~= "SpotLight" and class ~= "SurfaceLight"
+        and class ~= "Highlight" then
+        return false
+    end
+    local auraNamed = isAuraNamed(inst)
+    if class == "ParticleEmitter" then
+        return (inst.Enabled and inst.Rate > 0) or auraNamed
+    elseif class == "Trail" or class == "Beam" then
+        return inst.Enabled and auraNamed
+    elseif class == "Fire" or class == "Smoke" or class == "Sparkles" then
+        return (inst.Enabled ~= false) and auraNamed
+    elseif class == "PointLight" or class == "SpotLight" or class == "SurfaceLight" then
+        return inst.Enabled and auraNamed
+    elseif class == "Highlight" then
+        return inst.Enabled and auraNamed
+    end
+    return false
+end
+
+local function findSourceRoot(effect)
+    local cur = effect.Parent
+    local auraFallback
+    while cur and cur ~= game do
+        local name = lowerName(cur.Name)
+        if not auraFallback and string.find(name, "aura", 1, true)
+            and (cur:IsA("Folder") or cur:IsA("Model") or cur:IsA("BasePart") or cur:IsA("Attachment")) then
+            auraFallback = cur
+        end
+        if cur:IsA("Model") and nameLooksLikeStand(cur.Name) then
+            return cur
+        end
+        cur = cur.Parent
+    end
+    return auraFallback
+end
+
+local function getNearestPart(inst, stopAt)
+    local cur = inst
+    while cur and cur ~= stopAt do
+        if cur:IsA("BasePart") then return cur end
+        cur = cur.Parent
+    end
+    if stopAt and stopAt:IsA("BasePart") then return stopAt end
+    return nil
+end
+
+local function getAttachmentSnapshot(att, sourceRoot)
+    if not att or not att:IsA("Attachment") then return nil end
+    local part = getNearestPart(att.Parent, sourceRoot)
+    return {
+        source = att,
+        partName = part and part.Name or "HumanoidRootPart",
+        cframe = att.CFrame,
+        name = att.Name,
+    }
+end
+
+local function captureEffect(effect, sourceRoot)
+    local parent = effect.Parent
+    local parentAttachment = parent and parent:IsA("Attachment") and parent or nil
+    local part = getNearestPart(parentAttachment and parentAttachment.Parent or parent, sourceRoot)
+    local record = {
+        className = effect.ClassName,
+        name = effect.Name,
+        template = effect:Clone(),
+        partName = part and part.Name or "HumanoidRootPart",
+        parentAttachment = parentAttachment and getAttachmentSnapshot(parentAttachment, sourceRoot) or nil,
+        enabled = true,
+    }
+    if effect:IsA("ParticleEmitter") then
+        record.baseRate = effect.Rate
+        record.enabled = effect.Enabled
+    elseif effect:IsA("Trail") or effect:IsA("Beam") then
+        record.attachment0 = getAttachmentSnapshot(effect.Attachment0, sourceRoot)
+        record.attachment1 = getAttachmentSnapshot(effect.Attachment1, sourceRoot)
+    elseif effect:IsA("PointLight") or effect:IsA("SpotLight") or effect:IsA("SurfaceLight") then
+        record.baseBrightness = effect.Brightness
+    end
+    return record
+end
+
+local function removeStandAura()
+    for _, obj in ipairs(standAuraObjects) do
+        if obj and obj.Parent then pcall(function() obj:Destroy() end) end
+    end
+    table.clear(standAuraObjects)
+    table.clear(standAuraRecords)
+end
+
+local function findTargetPart(character, partName)
+    local part = partName and character:FindFirstChild(partName, true)
+    if part and part:IsA("BasePart") then return part end
+    return character:FindFirstChild("HumanoidRootPart")
+        or character:FindFirstChild("UpperTorso")
+        or character:FindFirstChild("Torso")
+end
+
+local function addStandAura(character)
+    removeStandAura()
+    if not character then return end
+    local source = standAuraSources[standAuraIndex]
+    if not source or type(source.effects) ~= "table" or #source.effects == 0 then
+        if standAuraScanStatus then
+            standAuraScanStatus.Text = "No loaded aura source selected. Summon a Stand with visible effects, then scan again."
+        end
+        return
+    end
+
+    local attachmentMap = {}
+    local function ensureTargetAttachment(snapshot)
+        if not snapshot then return nil end
+        if attachmentMap[snapshot.source] then return attachmentMap[snapshot.source] end
+        local part = findTargetPart(character, snapshot.partName)
+        if not part then return nil end
+        local att = Instance.new("Attachment")
+        att.Name = "TrueSightAuraAttachment_" .. tostring(snapshot.name or "FX")
+        att.CFrame = snapshot.cframe or CFrame.new()
+        att.Parent = part
+        attachmentMap[snapshot.source] = att
+        table.insert(standAuraObjects, att)
+        return att
+    end
+
+    for _, record in ipairs(source.effects) do
+        local ok, clone = pcall(function() return record.template:Clone() end)
+        if ok and clone then
+            clone.Name = "TrueSightAuraFX_" .. tostring(record.name)
+            local parent = findTargetPart(character, record.partName)
+            if clone:IsA("ParticleEmitter") then
+                if record.parentAttachment then
+                    parent = ensureTargetAttachment(record.parentAttachment) or parent
+                end
+                if parent then
+                    clone.Rate = (record.baseRate and record.baseRate > 0 and record.baseRate or 8) * standAuraIntensity
+                    clone.Enabled = true
+                    clone.Parent = parent
+                    table.insert(standAuraObjects, clone)
+                    table.insert(standAuraRecords, {obj = clone, baseRate = record.baseRate and record.baseRate > 0 and record.baseRate or 8, kind = "rate"})
+                else
+                    clone:Destroy()
+                end
+            elseif clone:IsA("Trail") or clone:IsA("Beam") then
+                local a0 = ensureTargetAttachment(record.attachment0)
+                local a1 = ensureTargetAttachment(record.attachment1)
+                if parent and a0 and a1 then
+                    clone.Attachment0 = a0
+                    clone.Attachment1 = a1
+                    clone.Enabled = true
+                    clone.Parent = parent
+                    table.insert(standAuraObjects, clone)
+                else
+                    clone:Destroy()
+                end
+            elseif clone:IsA("Fire") or clone:IsA("Smoke") or clone:IsA("Sparkles") then
+                if parent then
+                    clone.Enabled = true
+                    clone.Parent = parent
+                    table.insert(standAuraObjects, clone)
+                else
+                    clone:Destroy()
+                end
+            elseif clone:IsA("PointLight") or clone:IsA("SpotLight") or clone:IsA("SurfaceLight") then
+                if parent then
+                    clone.Brightness = (record.baseBrightness or clone.Brightness) * standAuraIntensity
+                    clone.Enabled = true
+                    clone.Parent = parent
+                    table.insert(standAuraObjects, clone)
+                    table.insert(standAuraRecords, {obj = clone, baseBrightness = record.baseBrightness or clone.Brightness, kind = "brightness"})
+                else
+                    clone:Destroy()
+                end
+            elseif clone:IsA("Highlight") then
+                clone.Adornee = character
+                clone.Parent = character
+                table.insert(standAuraObjects, clone)
+            else
+                clone:Destroy()
+            end
+        end
+    end
+
+    if standAuraScanStatus then
+        standAuraScanStatus.Text = "Applied " .. tostring(#standAuraRecords) .. " rate-controlled effect(s) from " .. tostring(source.label) .. "."
+    end
+end
+
+local function updateStandAuraIntensity()
+    for _, rec in ipairs(standAuraRecords) do
+        if rec.obj and rec.obj.Parent then
+            if rec.kind == "rate" then
+                rec.obj.Rate = rec.baseRate * standAuraIntensity
+            elseif rec.kind == "brightness" then
+                rec.obj.Brightness = rec.baseBrightness * standAuraIntensity
+            end
+        end
+    end
+end
+
+local function isSupportedStandFx(inst)
+    return inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
+        or inst:IsA("Fire") or inst:IsA("Smoke") or inst:IsA("Sparkles")
+        or inst:IsA("PointLight") or inst:IsA("SpotLight") or inst:IsA("SurfaceLight")
+        or inst:IsA("Highlight")
+end
+
+local function hasAuraPath(inst, stopAt)
+    local cur = inst
+    while cur and cur ~= stopAt do
+        local n = lowerName(cur.Name)
+        if string.find(n, "aura", 1, true)
+            or string.find(n, "ambient", 1, true)
+            or string.find(n, "idle", 1, true)
+            or string.find(n, "glow", 1, true)
+            or string.find(n, "energy", 1, true)
+            or string.find(n, "standfx", 1, true) then
+            return true
+        end
+        cur = cur.Parent
+    end
+    return false
+end
+
+local function isCurrentlyEnabledFx(inst)
+    local ok, enabled = pcall(function()
+        if inst:IsA("ParticleEmitter") then return inst.Enabled and inst.Rate > 0 end
+        if inst:IsA("Trail") or inst:IsA("Beam") then return inst.Enabled end
+        if inst:IsA("Fire") or inst:IsA("Smoke") or inst:IsA("Sparkles") then return inst.Enabled end
+        if inst:IsA("PointLight") or inst:IsA("SpotLight") or inst:IsA("SurfaceLight") then return inst.Enabled end
+        if inst:IsA("Highlight") then return inst.Enabled end
+        return false
+    end)
+    return ok and enabled == true
+end
+
+local function scanStandAuraSources()
+    removeStandAura()
+    table.clear(standAuraSources)
+    table.clear(standAuraNames)
+
+    local standsFolder = ReplicatedStorage:FindFirstChild("Stands")
+    local foundFromFolder = false
+
+    -- YBA stores the Stand/skin assets under ReplicatedStorage.Stands.
+    -- Treat each direct child as a source, so the selector can show the
+    -- actual stored asset name rather than a transient effect in Workspace.
+    if standsFolder then
+        for _, sourceRoot in ipairs(standsFolder:GetChildren()) do
+            local descendants = {}
+            local ok, result = pcall(function() return sourceRoot:GetDescendants() end)
+            if ok and type(result) == "table" then descendants = result end
+
+            local auraMatches, enabledFallback, allVisualFallback = {}, {}, {}
+            for _, inst in ipairs(descendants) do
+                if isSupportedStandFx(inst) and not isTrueSightEffect(inst) then
+                    table.insert(allVisualFallback, inst)
+                    if hasAuraPath(inst, sourceRoot) or isAuraNamed(inst) then
+                        table.insert(auraMatches, inst)
+                    end
+                    if isCurrentlyEnabledFx(inst) then
+                        table.insert(enabledFallback, inst)
+                    end
+                end
+            end
+
+            -- Prefer explicitly named aura branches. Some asset packs use
+            -- generic names, so fall back to enabled effects, then any stored
+            -- visual templates (including disabled emitters).
+            local chosen = #auraMatches > 0 and auraMatches
+                or (#enabledFallback > 0 and enabledFallback or allVisualFallback)
+            if #chosen > 0 then
+                local group = {
+                    root = sourceRoot,
+                    label = tostring(sourceRoot.Name),
+                    effects = {},
+                    seen = {},
+                    origin = "ReplicatedStorage.Stands",
+                }
+                for _, inst in ipairs(chosen) do
+                    if not group.seen[inst] then
+                        local captured, record = pcall(captureEffect, inst, sourceRoot)
+                        if captured and record then
+                            table.insert(group.effects, record)
+                            group.seen[inst] = true
+                        end
+                    end
+                end
+                if #group.effects > 0 then
+                    group.displayName = group.label .. " [" .. tostring(#group.effects) .. " FX]"
+                    table.insert(standAuraSources, group)
+                    foundFromFolder = true
+                end
+            end
+        end
+    end
+
+    -- Compatibility fallback for effects already instantiated in the live
+    -- game, in case this game version keeps some skin effects out of the folder.
+    if not foundFromFolder then
+        local groups = {}
+        local descendants = {}
+        local ok, scanResult = pcall(function() return game:GetDescendants() end)
+        if ok and type(scanResult) == "table" then descendants = scanResult end
+        for _, inst in ipairs(descendants) do
+            if isEffectCandidate(inst) and not isTrueSightEffect(inst) then
+                local root = findSourceRoot(inst)
+                if root and root ~= player.Character then
+                    local group = groups[root]
+                    if not group then
+                        local rootName = tostring(root.Name)
+                        local label = rootName
+                        if string.lower(rootName) == "stand" and root.Parent then
+                            label = tostring(root.Parent.Name) .. " / Stand"
+                        end
+                        group = {root = root, label = label, effects = {}, seen = {}, origin = "Loaded game FX"}
+                        groups[root] = group
+                    end
+                    if not group.seen[inst] then
+                        local captured, record = pcall(captureEffect, inst, root)
+                        if captured and record then
+                            table.insert(group.effects, record)
+                            group.seen[inst] = true
+                        end
+                    end
+                end
+            end
+        end
+        for _, group in pairs(groups) do
+            if #group.effects > 0 then
+                group.displayName = group.label .. " [" .. tostring(#group.effects) .. " FX]"
+                table.insert(standAuraSources, group)
+            end
+        end
+    end
+
+    table.sort(standAuraSources, function(a, b)
+        local an, bn = string.lower(a.label), string.lower(b.label)
+        if an == bn then return #a.effects > #b.effects end
+        return an < bn
+    end)
+
+    if #standAuraSources == 0 then
+        table.insert(standAuraNames, "No Stand effects found")
+        standAuraIndex = 1
+        if standAuraCycle then standAuraCycle.set(1) end
+        if standAuraScanStatus then
+            if not standsFolder then
+                standAuraScanStatus.Text = "ReplicatedStorage.Stands wasn't found; no compatible loaded effects were found either."
+            else
+                standAuraScanStatus.Text = "No compatible visual FX found under ReplicatedStorage.Stands or in loaded game effects."
+            end
+        end
+        warn("[TrueSight] No compatible Stand FX found under ReplicatedStorage.Stands or in loaded game effects.")
+        return 0
+    end
+
+    for _, source in ipairs(standAuraSources) do
+        table.insert(standAuraNames, source.displayName)
+    end
+    standAuraIndex = math.clamp(standAuraIndex, 1, #standAuraNames)
+    if standAuraCycle then standAuraCycle.set(standAuraIndex) end
+    if standAuraScanStatus then
+        local origin = standAuraSources[1].origin or "Stand assets"
+        standAuraScanStatus.Text = "Found " .. tostring(#standAuraSources) .. " sources. First source: " .. tostring(origin) .. ". Choose a source, then enable Stand Aura."
+    end
+    print("[TrueSight] Found " .. tostring(#standAuraSources) .. " Stand/skin FX sources.")
+    return #standAuraSources
+end
 
 ------------------------------------------------------------------
 -- Jump circles: a ring + splash where you land
@@ -1214,6 +1657,203 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.DisplayOrder = 100
 gui.Parent = player:WaitForChild("PlayerGui")
 
+-- Startup intro: kept inside a callback so it does not add locals to the main
+-- chunk (important for executors that hit Luau's local-register limit).
+task.spawn(function()
+    local introOk, introErr = pcall(function()
+        local intro = Instance.new("Frame")
+        intro.Name = "StartupIntro"
+        intro.Size = UDim2.fromScale(1, 1)
+        intro.Position = UDim2.fromScale(0, 0)
+        intro.BackgroundColor3 = Color3.fromRGB(7, 9, 14)
+        intro.BackgroundTransparency = 0.12
+        intro.BorderSizePixel = 0
+        intro.Active = true
+        intro.ZIndex = 1000
+        intro.Parent = gui
+
+        local card = Instance.new("Frame")
+        card.Name = "IntroCard"
+        card.AnchorPoint = Vector2.new(0.5, 0.5)
+        card.Position = UDim2.fromScale(0.5, 0.545)
+        card.Size = UDim2.fromOffset(390, 154)
+        card.BackgroundColor3 = Color3.fromRGB(15, 17, 24)
+        card.BackgroundTransparency = 0.06
+        card.BorderSizePixel = 0
+        card.ZIndex = 1001
+        card.Parent = intro
+
+        local cardCorner = Instance.new("UICorner")
+        cardCorner.CornerRadius = UDim.new(0, 10)
+        cardCorner.Parent = card
+
+        local cardStroke = Instance.new("UIStroke")
+        cardStroke.Color = accent
+        cardStroke.Thickness = 1.2
+        cardStroke.Transparency = 0.34
+        cardStroke.Parent = card
+
+        local cardScale = Instance.new("UIScale")
+        cardScale.Scale = 0.88
+        cardScale.Parent = card
+
+        local accentBar = Instance.new("Frame")
+        accentBar.Name = "AccentBar"
+        accentBar.Position = UDim2.fromOffset(22, 19)
+        accentBar.Size = UDim2.fromOffset(3, 28)
+        accentBar.BackgroundColor3 = accent
+        accentBar.BorderSizePixel = 0
+        accentBar.ZIndex = 1002
+        accentBar.Parent = card
+        local barCorner = Instance.new("UICorner")
+        barCorner.CornerRadius = UDim.new(1, 0)
+        barCorner.Parent = accentBar
+
+        local title = Instance.new("TextLabel")
+        title.Name = "IntroTitle"
+        title.BackgroundTransparency = 1
+        title.Position = UDim2.fromOffset(36, 13)
+        title.Size = UDim2.new(1, -58, 0, 39)
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 29
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.TextColor3 = Color3.fromRGB(242, 245, 252)
+        title.RichText = true
+        title.Text = 'True<font color="#' .. accent:ToHex() .. '">Sight</font>'
+        title.TextTransparency = 1
+        title.ZIndex = 1002
+        title.Parent = card
+
+        local subtitle = Instance.new("TextLabel")
+        subtitle.Name = "IntroSubtitle"
+        subtitle.BackgroundTransparency = 1
+        subtitle.Position = UDim2.fromOffset(37, 49)
+        subtitle.Size = UDim2.new(1, -58, 0, 17)
+        subtitle.Font = Enum.Font.GothamMedium
+        subtitle.TextSize = 10
+        subtitle.TextColor3 = Color3.fromRGB(151, 160, 179)
+        subtitle.TextXAlignment = Enum.TextXAlignment.Left
+        subtitle.Text = "YBA CLIENT  /  VERSION 4"
+        subtitle.TextTransparency = 1
+        subtitle.ZIndex = 1002
+        subtitle.Parent = card
+
+        local status = Instance.new("TextLabel")
+        status.Name = "IntroStatus"
+        status.BackgroundTransparency = 1
+        status.Position = UDim2.fromOffset(23, 88)
+        status.Size = UDim2.new(1, -46, 0, 16)
+        status.Font = Enum.Font.GothamMedium
+        status.TextSize = 10
+        status.TextColor3 = Color3.fromRGB(190, 196, 209)
+        status.TextXAlignment = Enum.TextXAlignment.Left
+        status.Text = "INITIALIZING CLIENT"
+        status.TextTransparency = 1
+        status.ZIndex = 1002
+        status.Parent = card
+
+        local track = Instance.new("Frame")
+        track.Name = "LoadingTrack"
+        track.Position = UDim2.fromOffset(23, 117)
+        track.Size = UDim2.new(1, -46, 0, 3)
+        track.BackgroundColor3 = Color3.fromRGB(42, 46, 57)
+        track.BackgroundTransparency = 1
+        track.BorderSizePixel = 0
+        track.ZIndex = 1002
+        track.Parent = card
+        local trackCorner = Instance.new("UICorner")
+        trackCorner.CornerRadius = UDim.new(1, 0)
+        trackCorner.Parent = track
+
+        local fill = Instance.new("Frame")
+        fill.Name = "LoadingFill"
+        fill.Size = UDim2.fromScale(0, 1)
+        fill.BackgroundColor3 = accent
+        fill.BackgroundTransparency = 1
+        fill.BorderSizePixel = 0
+        fill.ZIndex = 1003
+        fill.Parent = track
+        local fillCorner = Instance.new("UICorner")
+        fillCorner.CornerRadius = UDim.new(1, 0)
+        fillCorner.Parent = fill
+
+        -- Sounds live under the script's ScreenGui so they're local to this UI.
+        local whoosh = Instance.new("Sound")
+        whoosh.Name = "TrueSightIntroWhoosh"
+        whoosh.SoundId = "rbxassetid://137081214744553"
+        whoosh.Volume = 0.42
+        whoosh.Parent = gui
+        pcall(function() whoosh:Play() end)
+        Debris:AddItem(whoosh, 2.5)
+
+        local pop = Instance.new("Sound")
+        pop.Name = "TrueSightIntroPop"
+        pop.SoundId = "rbxassetid://140323850218372"
+        pop.Volume = 0.32
+        pop.PlaybackSpeed = 1.08
+        pop.Parent = gui
+        Debris:AddItem(pop, 2.5)
+        task.delay(0.19, function()
+            if pop.Parent then pcall(function() pop:Play() end) end
+        end)
+
+        TweenService:Create(card, TweenInfo.new(0.48, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Position = UDim2.fromScale(0.5, 0.5),
+        }):Play()
+        TweenService:Create(cardScale, TweenInfo.new(0.48, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Scale = 1,
+        }):Play()
+        TweenService:Create(title, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            TextTransparency = 0,
+        }):Play()
+        task.delay(0.08, function()
+            if subtitle.Parent then
+                TweenService:Create(subtitle, TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TextTransparency = 0,
+                }):Play()
+            end
+            if status.Parent then
+                TweenService:Create(status, TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TextTransparency = 0,
+                }):Play()
+            end
+            if track.Parent then
+                TweenService:Create(track, TweenInfo.new(0.24), {BackgroundTransparency = 0}):Play()
+                TweenService:Create(fill, TweenInfo.new(0.9, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                    Size = UDim2.fromScale(1, 1),
+                    BackgroundTransparency = 0,
+                }):Play()
+            end
+        end)
+
+        task.wait(1.28)
+        if not intro.Parent then return end
+        status.Text = "READY"
+        TweenService:Create(status, TweenInfo.new(0.12), {TextColor3 = accent}):Play()
+        task.wait(0.18)
+
+        TweenService:Create(intro, TweenInfo.new(0.32, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            BackgroundTransparency = 1,
+        }):Play()
+        TweenService:Create(card, TweenInfo.new(0.26, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromScale(0.5, 0.475),
+        }):Play()
+        TweenService:Create(cardStroke, TweenInfo.new(0.22), {Transparency = 1}):Play()
+        TweenService:Create(title, TweenInfo.new(0.18), {TextTransparency = 1}):Play()
+        TweenService:Create(subtitle, TweenInfo.new(0.18), {TextTransparency = 1}):Play()
+        TweenService:Create(status, TweenInfo.new(0.18), {TextTransparency = 1}):Play()
+        TweenService:Create(accentBar, TweenInfo.new(0.18), {BackgroundTransparency = 1}):Play()
+        TweenService:Create(track, TweenInfo.new(0.18), {BackgroundTransparency = 1}):Play()
+        TweenService:Create(fill, TweenInfo.new(0.18), {BackgroundTransparency = 1}):Play()
+        task.wait(0.36)
+        if intro.Parent then intro:Destroy() end
+    end)
+    if not introOk then
+        warn("[TrueSight] Startup intro skipped: " .. tostring(introErr))
+    end
+end)
+
 -- Screen effects layer (sits under the menu)
 local fxGui = Instance.new("ScreenGui")
 fxGui.Name = "TrueSightFX"
@@ -1967,6 +2607,11 @@ end)
 ------------------------------------------------------------------
 
 -- VISUAL
+-- Keep this panel's many setup locals in their own function scope. Luau has a
+-- 200-local-register limit per function, and the large UI setup otherwise
+-- reaches that limit before the Desync Box module is declared.
+local visualModules = {}
+;(function()
 local visualPanel = makePanel("Visual", 30)
 
 local hatMod = addModule(visualPanel, "China Hat", function(on)
@@ -2008,6 +2653,64 @@ end)
 auraMod.slider("Density", 5, 60, 22, 1, function(v)
     auraRate = v
     if auraEmitter then auraEmitter.Rate = v end
+end)
+
+
+local standAuraMod = addModule(visualPanel, "Stand Aura (Game FX)", function(on)
+    if on then
+        local ch = player.Character
+        if ch then addStandAura(ch) end
+    else
+        removeStandAura()
+    end
+end)
+standAuraCycle = standAuraMod.cycle("Loaded source", standAuraNames, standAuraIndex, function(i)
+    standAuraIndex = i
+    if standAuraMod.enabled and player.Character then
+        addStandAura(player.Character)
+    end
+end)
+standAuraMod.slider("Intensity", 0.5, 2.5, standAuraIntensity, 0.1, function(v)
+    standAuraIntensity = v
+    updateStandAuraIntensity()
+end)
+
+local standAuraScanButton = Instance.new("TextButton")
+standAuraScanButton.Size = UDim2.new(1, 0, 0, 27)
+styleButton(standAuraScanButton)
+standAuraScanButton.BackgroundColor3 = SUB
+standAuraScanButton.TextSize = 12
+standAuraScanButton.Text = "Scan ReplicatedStorage.Stands"
+standAuraScanButton.Parent = standAuraMod.holder:FindFirstChildWhichIsA("Frame") or standAuraMod.holder
+-- Place the action inside the module's settings container, locating the frame with a plus marker.
+for _, child in ipairs(standAuraMod.holder:GetChildren()) do
+    if child:IsA("Frame") and child ~= standAuraMod.panel then
+        if child:FindFirstChildWhichIsA("UIListLayout") then
+            if child.Visible == false then
+                standAuraScanButton.Parent = child
+                break
+            end
+        end
+    end
+end
+standAuraScanStatus = Instance.new("TextLabel")
+standAuraScanStatus.Size = UDim2.new(1, 0, 0, 38)
+standAuraScanStatus.BackgroundTransparency = 1
+standAuraScanStatus.Font = FONT
+standAuraScanStatus.TextSize = 11
+standAuraScanStatus.TextWrapped = true
+standAuraScanStatus.TextXAlignment = Enum.TextXAlignment.Left
+standAuraScanStatus.TextYAlignment = Enum.TextYAlignment.Center
+standAuraScanStatus.TextColor3 = DIM
+standAuraScanStatus.Text = "Scans Stand/skin FX stored in ReplicatedStorage.Stands."
+standAuraScanStatus.Parent = standAuraScanButton.Parent
+standAuraScanButton.LayoutOrder = 97
+standAuraScanStatus.LayoutOrder = 98
+standAuraScanButton.MouseButton1Click:Connect(function()
+    local count = scanStandAuraSources()
+    if count > 0 then
+        standAuraScanStatus.Text = "Found " .. tostring(count) .. " source(s) in the Stand FX scan. Choose one, then enable the module."
+    end
 end)
 
 local verityMod = addModule(visualPanel, "Verity Pet", function(on)
@@ -2072,7 +2775,21 @@ ghostMod.cycle("Label", {"On", "Off"}, 1, function(i)
     if ghostGui then ghostGui.Enabled = ghostLabelOn end
 end)
 
+-- Expose only the module handles needed by the respawn handler outside scope.
+visualModules.hat = hatMod
+visualModules.wings = wingMod
+visualModules.aura = auraMod
+visualModules.standAura = standAuraMod
+visualModules.trails = trailMod
+visualModules.jump = jumpMod
+visualModules.ghost = ghostMod
+end)()
+
 -- RENDER
+-- Isolate render-module construction from the main chunk. The main script has
+-- many long-lived locals (callbacks/config state), so this keeps Luau's
+-- 200-register limit from being reached while creating later render modules.
+local renderState = (function()
 local renderPanel = makePanel("Render", 225)
 
 local fovValue = math.floor(oldFOV + 0.5)
@@ -2313,10 +3030,25 @@ crosshairMod.slider("Size", 16, 48, 30, 2, function(v)
 end)
 end)()
 
+return {
+    correction = correction,
+    blur = blur,
+    bloom = bloom,
+    bloomCreated = bloomCreated,
+    bloomOriginal = bloomOriginal,
+    rays = rays,
+    raysCreated = raysCreated,
+    raysOriginal = raysOriginal,
+}
+end)()
+
 -- WORLD
+-- Keep world-module locals in a separate function scope to stay below Luau's
+-- per-function local-register limit. Return a cleanup closure for the mood FX.
+local cleanupWorldMood = (function()
 local worldPanel = makePanel("World", 420)
 
-;(function()
+local cleanupWorldMoodInternal = (function()
 local skyboxFaces = {
     "SkyboxBk", "SkyboxDn", "SkyboxFt",
     "SkyboxLf", "SkyboxRt", "SkyboxUp",
@@ -2494,6 +3226,12 @@ fogControlsMod.slider("Distance", 100, 12000, fogEndValue, 100, function(v)
     fogEndValue = v
     if fogControlsMod.enabled then applyFogControls() end
 end)
+return function()
+    if moodAtmosphere then pcall(function() moodAtmosphere:Destroy() end) end
+    if moodCorrection then pcall(function() moodCorrection:Destroy() end) end
+    moodAtmosphere = nil
+    moodCorrection = nil
+end
 end)()
 
 addModule(worldPanel, "Remove Fog", setFog)
@@ -2532,6 +3270,9 @@ timeMod.cycle("Preset", {"Morning", "Noon", "Sunset", "Night"}, 2, function(i)
     timeValue = presetHours[i]
     if timeMod.enabled then Lighting.ClockTime = timeValue end
 end)
+
+return cleanupWorldMoodInternal
+end)()
 
 -- HUD
 ;(function()
@@ -3203,9 +3944,36 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
         local focused = UserInputService:GetFocusedTextBox()
         local moving = humanoid.MoveDirection.Magnitude > 0.05
         local speed = humanoid.WalkSpeed
-        -- In YBA, running is generally above 19; low speeds can mean a stun,
-        -- block recovery, or another temporary movement lock.
-        local running = speed >= 19
+
+        -- Prefer explicit game-provided sprint flags when the experience exposes
+        -- them. Attribute/value names vary between YBA builds, so check common
+        -- names on the player, character and humanoid before using WalkSpeed.
+        local function readSprintFlag(container)
+            if not container then return nil end
+            for _, name in ipairs({"IsSprinting", "Sprinting", "IsRunning", "Running", "SprintingEnabled"}) do
+                local value = nil
+                pcall(function() value = container:GetAttribute(name) end)
+                if type(value) == "boolean" then return value end
+                local child = container:FindFirstChild(name)
+                if child and child:IsA("BoolValue") then return child.Value end
+            end
+            return nil
+        end
+        local gameSprintState
+        -- Re-check in priority order so an explicit false is preserved.
+        local explicitSprintState = readSprintFlag(character)
+        if explicitSprintState == nil then explicitSprintState = readSprintFlag(player) end
+        if explicitSprintState == nil then explicitSprintState = readSprintFlag(humanoid) end
+        gameSprintState = explicitSprintState
+
+        -- When a game flag exists, trust it even if WalkSpeed stays elevated
+        -- during block recovery. Otherwise use the usual YBA speed threshold.
+        local running
+        if gameSprintState ~= nil then
+            running = gameSprintState
+        else
+            running = speed >= 19
+        end
         local walkingWhileMoving = moving and speed >= 5 and not running
 
         if running then
@@ -3304,6 +4072,22 @@ rejoinButton = addAction(clientPanel, "Rejoin Server", function()
     end
 end)
 
+-- Extra client QoL features
+-- Anti-AFK: sends a harmless right-click input when Roblox reports idle.
+local antiAfkConn
+local antiAfkMod = addModule(clientPanel, "Anti-AFK", function(on)
+    if antiAfkConn then antiAfkConn:Disconnect(); antiAfkConn = nil end
+    if on then
+        antiAfkConn = player.Idled:Connect(function()
+            pcall(function()
+                local virtualUser = game:GetService("VirtualUser")
+                virtualUser:CaptureController()
+                virtualUser:ClickButton2(Vector2.new(0, 0))
+            end)
+        end)
+    end
+end)
+
 local arrayMod = addModule(hudPanel, "ArrayList", function(on)
     arrayFrame.Visible = on
 end)
@@ -3393,12 +4177,13 @@ table.insert(connections, player.CharacterAdded:Connect(function(character)
         character:WaitForChild(
             hum.RigType == Enum.HumanoidRigType.R15 and "UpperTorso" or "Torso", 5)
     end
-    if hatMod.enabled then addHat(character) end
-    if trailMod.enabled then addTrail(character) end
-    if wingMod.enabled then addWings(character) end
-    if auraMod.enabled then addAura(character) end
-    if jumpMod.enabled then hookJump(character) end
-    if ghostMod.enabled then addGhost() end
+    if visualModules.hat.enabled then addHat(character) end
+    if visualModules.trails.enabled then addTrail(character) end
+    if visualModules.wings.enabled then addWings(character) end
+    if visualModules.aura.enabled then addAura(character) end
+    if visualModules.standAura.enabled then addStandAura(character) end
+    if visualModules.jump.enabled then hookJump(character) end
+    if visualModules.ghost.enabled then addGhost() end
 end))
 
 ------------------------------------------------------------------
@@ -3416,37 +4201,43 @@ local function cleanup()
         local m = modules[i]
         if m.enabled then pcall(m.set, false) end
     end
-    for _, c in ipairs(connections) do c:Disconnect() end
+    for _, c in ipairs(connections) do
+        pcall(function() c:Disconnect() end)
+    end
     table.clear(connections)
+    if sprintConn then
+        pcall(function() sprintConn:Disconnect() end)
+        sprintConn = nil
+    end
     pcall(function() RunService:UnbindFromRenderStep("TrueSightFOV") end)
 
     removeHat()
     removeTrail()
     removeWings()
     removeAura()
+    removeStandAura()
     verity.remove()
     unhookJump()
     removeGhost()
     if nameTagLoop then nameTagLoop:Disconnect() nameTagLoop = nil end
     for plr in pairs(nameTagObjects) do removeNameTag(plr) end
-    if moodAtmosphere then moodAtmosphere:Destroy() end
-    if moodCorrection then moodCorrection:Destroy() end
-    correction:Destroy()
-    blur:Destroy()
-    if bloomCreated then
-        bloom:Destroy()
-    elseif bloomOriginal and bloom.Parent then
-        bloom.Enabled = bloomOriginal.Enabled
-        bloom.Intensity = bloomOriginal.Intensity
-        bloom.Size = bloomOriginal.Size
-        bloom.Threshold = bloomOriginal.Threshold
+    if cleanupWorldMood then pcall(cleanupWorldMood) end
+    if renderState.correction then renderState.correction:Destroy() end
+    if renderState.blur then renderState.blur:Destroy() end
+    if renderState.bloomCreated then
+        renderState.bloom:Destroy()
+    elseif renderState.bloomOriginal and renderState.bloom.Parent then
+        renderState.bloom.Enabled = renderState.bloomOriginal.Enabled
+        renderState.bloom.Intensity = renderState.bloomOriginal.Intensity
+        renderState.bloom.Size = renderState.bloomOriginal.Size
+        renderState.bloom.Threshold = renderState.bloomOriginal.Threshold
     end
-    if raysCreated then
-        rays:Destroy()
-    elseif raysOriginal and rays.Parent then
-        rays.Enabled = raysOriginal.Enabled
-        rays.Intensity = raysOriginal.Intensity
-        rays.Spread = raysOriginal.Spread
+    if renderState.raysCreated then
+        renderState.rays:Destroy()
+    elseif renderState.raysOriginal and renderState.rays.Parent then
+        renderState.rays.Enabled = renderState.raysOriginal.Enabled
+        renderState.rays.Intensity = renderState.raysOriginal.Intensity
+        renderState.rays.Spread = renderState.raysOriginal.Spread
     end
     fxGui:Destroy()
     gui:Destroy()
