@@ -1,5 +1,6 @@
 -- TRUESIGHT | client-side visual script
--- Cosmetic and visual modules only.
+-- UI/FX maintenance build: startup-only asset discovery, stable dragging, opaque Stand preview, impact-position Black Flash.
+-- Client-side visuals plus a small YBA Character Skill Tree helper.
 --
 -- Controls:
 --   Left-click a module  = toggle it
@@ -55,12 +56,18 @@ local modules = {}
 -- Shared accent color (hat, trail, wings, GUI)
 ------------------------------------------------------------------
 local presets = {
-    {name = "Cyan",   color = Color3.fromRGB(0, 220, 255)},
-    {name = "Purple", color = Color3.fromRGB(170, 70, 255)},
-    {name = "Pink",   color = Color3.fromRGB(255, 70, 170)},
-    {name = "Green",  color = Color3.fromRGB(70, 255, 140)},
-    {name = "Gold",   color = Color3.fromRGB(255, 200, 70)},
-    {name = "Red",    color = Color3.fromRGB(255, 75, 75)},
+    {name = "Cyan",       color = Color3.fromRGB(0, 220, 255)},
+    {name = "Violet",     color = Color3.fromRGB(170, 95, 255)},
+    {name = "Rose",       color = Color3.fromRGB(255, 80, 170)},
+    {name = "Mint",       color = Color3.fromRGB(75, 255, 180)},
+    {name = "Gold",       color = Color3.fromRGB(255, 196, 75)},
+    {name = "Crimson",    color = Color3.fromRGB(255, 72, 90)},
+    {name = "Ice Blue",   color = Color3.fromRGB(125, 205, 255)},
+    {name = "Orange",     color = Color3.fromRGB(255, 135, 65)},
+    {name = "Lime",       color = Color3.fromRGB(175, 255, 65)},
+    {name = "Magenta",    color = Color3.fromRGB(245, 70, 255)},
+    {name = "White",      color = Color3.fromRGB(235, 242, 255)},
+    {name = "Electric",   color = Color3.fromRGB(80, 125, 255)},
 }
 local presetNames = {}
 for i, p in ipairs(presets) do presetNames[i] = p.name end
@@ -190,7 +197,7 @@ local trailObjects = {}
 local activeTrail
 local trailLifetime = 0.65
 local trailStyle = 1
-local trailStyleNames = {"Ribbon", "Lightning", "Flower"}
+local trailStyleNames = {"Ribbon", "Lightning", "Flower", "Comet", "Prism", "Plasma"}
 
 local function trailColor(c)
     return ColorSequence.new(c, c:Lerp(Color3.new(1, 1, 1), 0.55))
@@ -246,6 +253,38 @@ local function addTrail(character)
         })
         trail.Texture = "rbxasset://textures/particles/flare_main.dds"
         trail.TextureMode = Enum.TextureMode.Stretch
+    elseif trailStyle == 4 then -- Comet: broad head, tapered tail
+        trail.WidthScale = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.95),
+            NumberSequenceKeypoint.new(0.22, 0.72),
+            NumberSequenceKeypoint.new(0.72, 0.24),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        trail.Texture = "rbxasset://textures/particles/flare_main.dds"
+        trail.TextureMode = Enum.TextureMode.Stretch
+    elseif trailStyle == 5 then -- Prism: segmented luminous ribbon
+        trail.WidthScale = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.55),
+            NumberSequenceKeypoint.new(0.18, 1.0),
+            NumberSequenceKeypoint.new(0.36, 0.42),
+            NumberSequenceKeypoint.new(0.62, 0.88),
+            NumberSequenceKeypoint.new(0.82, 0.32),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        trail.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+        trail.TextureMode = Enum.TextureMode.Wrap
+        trail.TextureLength = 0.8
+    elseif trailStyle == 6 then -- Plasma: tight, pulsing energy trail
+        trail.WidthScale = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.25),
+            NumberSequenceKeypoint.new(0.2, 0.75),
+            NumberSequenceKeypoint.new(0.48, 0.3),
+            NumberSequenceKeypoint.new(0.72, 0.7),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        trail.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+        trail.TextureMode = Enum.TextureMode.Wrap
+        trail.TextureLength = 0.55
     else
         trail.WidthScale = NumberSequence.new(1)
         trail.Texture = ""
@@ -375,6 +414,15 @@ local auraStyles = {
     {name = "Soft Glow", texture = "rbxasset://textures/particles/flare_main.dds",
         speed = NumberRange.new(0.1, 0.5), acceleration = Vector3.new(0, 1.2, 0),
         lifetime = NumberRange.new(1.5, 2.4), size = 0.9},
+    {name = "Smoke Drift", texture = "rbxasset://textures/particles/smoke_main.dds",
+        speed = NumberRange.new(0.15, 0.55), acceleration = Vector3.new(0, 1.5, 0),
+        lifetime = NumberRange.new(1.6, 2.7), size = 1.15},
+    {name = "Prismatic", texture = "rbxasset://textures/particles/sparkles_main.dds",
+        speed = NumberRange.new(0.35, 1.05), acceleration = Vector3.new(0, 0.8, 0),
+        lifetime = NumberRange.new(0.7, 1.4), size = 0.38},
+    {name = "Void Pulse", texture = "rbxasset://textures/particles/flare_main.dds",
+        speed = NumberRange.new(0.05, 0.3), acceleration = Vector3.new(0, -0.35, 0),
+        lifetime = NumberRange.new(1.1, 1.8), size = 1.25},
 }
 
 local function auraColor(c)
@@ -455,11 +503,12 @@ end)
 local standAuraObjects = {}
 local standAuraRecords = {}
 local standAuraSources = {}
-local standAuraNames = {"Scan loaded effects first"}
+local standAuraNames = {"Loading Stand FX..."}
 local standAuraIndex = 1
 local standAuraIntensity = 1
 local standAuraCycle
 local standAuraScanStatus
+local standAuraScanBusy = false
 
 local knownStandNames = {
     "star platinum", "the world", "crazy diamond", "gold experience",
@@ -624,7 +673,7 @@ local function addStandAura(character)
     local source = standAuraSources[standAuraIndex]
     if not source or type(source.effects) ~= "table" or #source.effects == 0 then
         if standAuraScanStatus then
-            standAuraScanStatus.Text = "No loaded aura source selected. Summon a Stand with visible effects, then scan again."
+            standAuraScanStatus.Text = "No loaded aura source is available yet. Restart TrueSight after the Stand assets load."
         end
         return
     end
@@ -773,7 +822,8 @@ local function scanStandAuraSources()
             if ok and type(result) == "table" then descendants = result end
 
             local auraMatches, enabledFallback, allVisualFallback = {}, {}, {}
-            for _, inst in ipairs(descendants) do
+            for scanIndex, inst in ipairs(descendants) do
+                if scanIndex % 350 == 0 then task.wait() end
                 if isSupportedStandFx(inst) and not isTrueSightEffect(inst) then
                     table.insert(allVisualFallback, inst)
                     if hasAuraPath(inst, sourceRoot) or isAuraNamed(inst) then
@@ -823,7 +873,8 @@ local function scanStandAuraSources()
         local descendants = {}
         local ok, scanResult = pcall(function() return game:GetDescendants() end)
         if ok and type(scanResult) == "table" then descendants = scanResult end
-        for _, inst in ipairs(descendants) do
+        for scanIndex, inst in ipairs(descendants) do
+            if scanIndex % 500 == 0 then task.wait() end
             if isEffectCandidate(inst) and not isTrueSightEffect(inst) then
                 local root = findSourceRoot(inst)
                 if root and root ~= player.Character then
@@ -1627,12 +1678,12 @@ end
 ------------------------------------------------------------------
 -- GUI framework
 ------------------------------------------------------------------
-local BG = Color3.fromRGB(17, 18, 23)
-local HEADER = Color3.fromRGB(12, 13, 17)
-local ROW = Color3.fromRGB(24, 26, 33)
-local SUB = Color3.fromRGB(19, 20, 26)
-local TEXT = Color3.fromRGB(228, 231, 238)
-local DIM = Color3.fromRGB(135, 140, 155)
+local BG = Color3.fromRGB(13, 16, 23)
+local HEADER = Color3.fromRGB(8, 11, 17)
+local ROW = Color3.fromRGB(22, 27, 37)
+local SUB = Color3.fromRGB(16, 21, 31)
+local TEXT = Color3.fromRGB(232, 238, 248)
+local DIM = Color3.fromRGB(145, 155, 174)
 local FONT = Enum.Font.GothamMedium
 local FONTB = Enum.Font.GothamBold
 
@@ -1927,7 +1978,8 @@ watermark.Position = UDim2.fromOffset(8, 8)
 watermark.Size = UDim2.fromOffset(0, 26)
 watermark.AutomaticSize = Enum.AutomaticSize.X
 watermark.BackgroundColor3 = BG
-watermark.BackgroundTransparency = 0.25
+watermark.BackgroundTransparency = 0.18
+watermark:SetAttribute("TrueSightRole", "panel")
 watermark.BorderSizePixel = 0
 watermark.RichText = true
 watermark.Font = FONTB
@@ -2010,13 +2062,15 @@ statsHeader.LayoutOrder = 0
 statsHeader.ZIndex = 21
 statsHeader.Size = UDim2.new(1, 0, 0, 22)
 statsHeader.BackgroundColor3 = BG
-statsHeader.BackgroundTransparency = 0.15
+statsHeader.BackgroundTransparency = 0.12
+statsHeader:SetAttribute("TrueSightRole", "header")
 statsHeader.BorderSizePixel = 0
 statsHeader.AutoButtonColor = false
 statsHeader.Active = true
 statsHeader.Font = FONTB
 statsHeader.TextSize = 11
 statsHeader.TextColor3 = DIM
+statsHeader:SetAttribute("TrueSightRole", "muted")
 statsHeader.Text = "  TRUESIGHT  /  PERFORMANCE  ·  DRAG"
 statsHeader.TextXAlignment = Enum.TextXAlignment.Left
 statsHeader.Parent = statsFrame
@@ -2161,7 +2215,7 @@ local clickGui = Instance.new("Frame")
 clickGui.Name = "ClickGui"
 clickGui.Size = UDim2.fromScale(1, 1)
 clickGui.BackgroundColor3 = Color3.new(0, 0, 0)
-clickGui.BackgroundTransparency = 0.6
+clickGui.BackgroundTransparency = 1
 clickGui.BorderSizePixel = 0
 clickGui.Active = false
 clickGui.Parent = gui
@@ -2187,12 +2241,509 @@ local keyUiState = {
     updateKeyUi = nil,
 }
 
+------------------------------------------------------------------
+-- Smooth neon backdrop. One capped-rate animation loop drives every pattern.
+-- Patterns are designed as subtle ambient glows rather than busy particles.
+------------------------------------------------------------------
+local menuFxController = (function()
+    local styleNames = {"Soft Glow", "Flowing Lines", "Glowing Hexagons", "Neon Dust", "Electric Veil", "Off"}
+    local styleIndex = 1
+    local enabled = true
+    local opacity = 0.58
+    local motionSpeed = 0.48
+    local density = 18
+    local softness = 0.82
+    local cursorStrength = 0.68
+    local lastFrame = 0
+    local pieces = {}
+    local cursorGlowParts = nil
+    local smoothMouse = Vector2.new(0.5, 0.5)
+
+    local layer = Instance.new("Frame")
+    layer.Name = "MenuBackdrop"
+    layer.Size = UDim2.fromScale(1, 1)
+    layer.BackgroundColor3 = Color3.fromRGB(7, 10, 17)
+    layer.BackgroundTransparency = 0.56
+    layer.BorderSizePixel = 0
+    layer.Active = false
+    layer.ZIndex = 1
+    layer.Parent = clickGui
+    layer:SetAttribute("TrueSightRole", "backdrop")
+
+    local backdropGradient = Instance.new("UIGradient")
+    backdropGradient.Rotation = 18
+    backdropGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(8, 14, 26)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(12, 14, 25)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(6, 8, 14)),
+    })
+    backdropGradient.Parent = layer
+    backdropGradient:SetAttribute("TrueSightRole", "backdrop-gradient")
+
+    local canvas = Instance.new("Frame")
+    canvas.Name = "EffectCanvas"
+    canvas.Size = UDim2.fromScale(1, 1)
+    canvas.BackgroundTransparency = 1
+    canvas.BorderSizePixel = 0
+    canvas.Active = false
+    canvas.ZIndex = 1
+    canvas.Parent = layer
+
+    local function clearPieces()
+        for _, child in ipairs(canvas:GetChildren()) do child:Destroy() end
+        table.clear(pieces)
+        cursorGlowParts = nil
+    end
+
+    local function addCursorGlow()
+        local group = {}
+        for _, spec in ipairs({
+            {size = 184, fill = 0.982, stroke = 0.87, thickness = 2},
+            {size = 126, fill = 0.988, stroke = 0.79, thickness = 1.5},
+            {size = 70, fill = 0.991, stroke = 0.70, thickness = 1},
+        }) do
+            local ring = Instance.new("Frame")
+            ring.Name = "CursorGlowLayer"
+            ring.AnchorPoint = Vector2.new(0.5, 0.5)
+            ring.Position = UDim2.fromScale(smoothMouse.X, smoothMouse.Y)
+            ring.Size = UDim2.fromOffset(spec.size, spec.size)
+            ring.BackgroundColor3 = accent
+            ring.BackgroundTransparency = spec.fill
+            ring.BorderSizePixel = 0
+            ring.Active = false
+            ring.ZIndex = 2
+            ring.Parent = canvas
+            corner(ring, spec.size)
+            local line = Instance.new("UIStroke")
+            line.Color = accent
+            line.Thickness = spec.thickness
+            line.Transparency = spec.stroke
+            line.Parent = ring
+            table.insert(group, {frame = ring, stroke = line, size = spec.size, fill = spec.fill, baseStroke = spec.stroke})
+        end
+        cursorGlowParts = group
+    end
+
+    local function addLine(x, y, width, height, rotation, phase, alpha, drift)
+        local obj = Instance.new("Frame")
+        obj.Name = "SoftNeonRibbon"
+        obj.AnchorPoint = Vector2.new(0.5, 0.5)
+        obj.Position = UDim2.fromScale(x, y)
+        obj.Size = UDim2.new(width, 0, 0, height)
+        obj.Rotation = rotation
+        obj.BackgroundColor3 = accent
+        obj.BackgroundTransparency = 0.68
+        obj.BorderSizePixel = 0
+        obj.Active = false
+        obj.Parent = canvas
+        corner(obj, math.max(10, math.floor(height / 2)))
+
+        local grad = Instance.new("UIGradient")
+        grad.Rotation = 0
+        grad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, accent:Lerp(Color3.fromRGB(105, 120, 255), 0.18)),
+            ColorSequenceKeypoint.new(0.5, accent),
+            ColorSequenceKeypoint.new(1, accent:Lerp(Color3.fromRGB(115, 95, 255), 0.24)),
+        })
+        grad.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.18, 0.82),
+            NumberSequenceKeypoint.new(0.5, 0.26),
+            NumberSequenceKeypoint.new(0.82, 0.82),
+            NumberSequenceKeypoint.new(1, 1),
+        })
+        grad.Parent = obj
+        obj:SetAttribute("TrueSightRole", "accent-fx")
+        table.insert(pieces, {obj = obj, gradient = grad, kind = "line", x = x, y = y,
+            phase = phase, alpha = alpha or 0.5, baseRotation = rotation, drift = drift or 0.025})
+    end
+
+    local function addDot(x, y, size, phase, vx, vy)
+        local obj = Instance.new("Frame")
+        obj.Name = "NeonDustDot"
+        obj.AnchorPoint = Vector2.new(0.5, 0.5)
+        obj.Position = UDim2.fromScale(x, y)
+        obj.Size = UDim2.fromOffset(size, size)
+        obj.BackgroundColor3 = accent
+        obj.BackgroundTransparency = 0.5
+        obj.BorderSizePixel = 0
+        obj.Active = false
+        obj.Parent = canvas
+        corner(obj, size)
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = accent
+        stroke.Thickness = 1
+        stroke.Transparency = 0.48
+        stroke.Parent = obj
+        table.insert(pieces, {obj = obj, stroke = stroke, kind = "dot", x = x, y = y, size = size,
+            phase = phase, vx = vx, vy = vy, alpha = 0.55})
+    end
+
+    local function addHex(x, y, size, phase, vx, vy)
+        local obj = Instance.new("TextLabel")
+        obj.Name = "NeonHexagonOutline"
+        obj.AnchorPoint = Vector2.new(0.5, 0.5)
+        obj.Position = UDim2.fromScale(x, y)
+        obj.Size = UDim2.fromOffset(size, size)
+        obj.BackgroundTransparency = 1
+        obj.Text = "⬡"
+        obj.Font = Enum.Font.GothamMedium
+        obj.TextSize = math.max(22, math.floor(size * 0.72))
+        obj.TextColor3 = accent
+        obj.TextStrokeColor3 = accent
+        obj.TextStrokeTransparency = 0.45
+        obj.TextTransparency = 0.48
+        obj.Active = false
+        obj.Parent = canvas
+        table.insert(pieces, {obj = obj, kind = "hex", x = x, y = y, phase = phase,
+            vx = vx, vy = vy, alpha = 0.5})
+    end
+
+    local function addGlowRing(x, y, size, phase)
+        -- Separate outer bloom and crisp inner ring: avoids stacking multiple
+        -- UIStroke instances on one GuiObject, which varies across UI runtimes.
+        local bloom = Instance.new("Frame")
+        bloom.Name = "SoftGlowBloom"
+        bloom.AnchorPoint = Vector2.new(0.5, 0.5)
+        bloom.Position = UDim2.fromScale(x, y)
+        bloom.Size = UDim2.fromOffset(size + 10, size + 10)
+        bloom.BackgroundTransparency = 1
+        bloom.BorderSizePixel = 0
+        bloom.Active = false
+        bloom.Parent = canvas
+        corner(bloom, size + 10)
+        local bloomStroke = Instance.new("UIStroke")
+        bloomStroke.Name = "GlowBloom"
+        bloomStroke.Color = accent
+        bloomStroke.Thickness = 4
+        bloomStroke.Transparency = 0.93
+        bloomStroke.Parent = bloom
+
+        local obj = Instance.new("Frame")
+        obj.Name = "SoftGlowRing"
+        obj.AnchorPoint = Vector2.new(0.5, 0.5)
+        obj.Position = UDim2.fromScale(x, y)
+        obj.Size = UDim2.fromOffset(size, size)
+        obj.BackgroundTransparency = 1
+        obj.BorderSizePixel = 0
+        obj.Active = false
+        obj.Parent = canvas
+        corner(obj, size)
+        local stroke = Instance.new("UIStroke")
+        stroke.Name = "GlowOutline"
+        stroke.Color = accent
+        stroke.Thickness = 1.25
+        stroke.Transparency = 0.67
+        stroke.Parent = obj
+        table.insert(pieces, {obj = obj, stroke = stroke, bloom = bloom, bloomStroke = bloomStroke,
+            kind = "ring", x = x, y = y, size = size, phase = phase, alpha = 0.55})
+    end
+
+    local function applySoftness()
+        local centerTransparency = math.clamp(0.25 + (1 - softness) * 0.42, 0.25, 0.62)
+        for _, p in ipairs(pieces) do
+            if p.gradient and p.gradient.Parent then
+                p.gradient.Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 1),
+                    NumberSequenceKeypoint.new(0.18, math.min(0.98, centerTransparency + 0.18)),
+                    NumberSequenceKeypoint.new(0.5, centerTransparency),
+                    NumberSequenceKeypoint.new(0.82, math.min(0.98, centerTransparency + 0.18)),
+                    NumberSequenceKeypoint.new(1, 1),
+                })
+            end
+        end
+    end
+
+    local function rebuild()
+        clearPieces()
+        local style = styleNames[styleIndex]
+        canvas.Visible = enabled and style ~= "Off"
+        layer.Visible = enabled and style ~= "Off"
+        if not canvas.Visible then return end
+
+        if style == "Soft Glow" then
+            for i = 1, 6 do
+                local x = 0.16 + (i - 1) * 0.145
+                local y = 0.22 + (i % 3) * 0.22
+                addLine(x, y, 0.50 + (i % 3) * 0.12, 38 + (i % 3) * 18,
+                    -18 + i * 7, i * 0.83, 0.45, 0.018)
+            end
+            for i = 1, 6 do
+                addGlowRing(0.14 + ((i * 0.173) % 0.75), 0.2 + ((i * 0.267) % 0.62),
+                    76 + (i % 3) * 54, i * 1.27)
+            end
+        elseif style == "Flowing Lines" then
+            for i = 1, math.max(7, math.floor(density * 0.55)) do
+                local x = ((i * 0.6180339) + 0.05) % 1
+                local y = 0.12 + ((i * 0.2360679) % 0.78)
+                addLine(x, y, 0.46 + (i % 4) * 0.13, 22 + (i % 3) * 12,
+                    -22 + (i % 7) * 7, i * 0.71, 0.42, 0.022)
+            end
+        elseif style == "Glowing Hexagons" then
+            local rows = math.max(2, math.floor(math.sqrt(density * 0.65)))
+            local cols = math.max(4, math.floor(density / rows))
+            for row = 1, rows do
+                for col = 1, cols do
+                    local x = (col - 0.45 + (row % 2) * 0.34) / (cols + 0.25)
+                    local y = 0.13 + (row - 1) * (0.73 / math.max(1, rows - 1))
+                    local size = 32 + ((row + col) % 4) * 12
+                    addHex(x, y, size, row * 0.9 + col * 0.61,
+                        ((col % 3) - 1) * 0.0018, ((row % 3) - 1) * 0.0015)
+                end
+            end
+        elseif style == "Neon Dust" then
+            for i = 1, density do
+                local x = ((i * 0.6180339) + 0.07) % 1
+                local y = ((i * 0.3819660) + 0.13) % 1
+                addDot(x, y, 2 + (i % 4), i * 0.77,
+                    (((i % 5) - 2) * 0.0035), (((i % 7) - 3) * 0.003))
+            end
+        elseif style == "Electric Veil" then
+            -- Smooth, wide ribbons with low-amplitude motion instead of sharp lightning bolts.
+            for i = 1, math.max(7, math.floor(density * 0.48)) do
+                local x = ((i * 0.754877) + 0.08) % 1
+                local y = 0.12 + ((i * 0.569840) % 0.76)
+                addLine(x, y, 0.32 + (i % 4) * 0.13, 4 + (i % 2) * 3,
+                    -34 + (i % 6) * 13, i * 1.4, 0.62, 0.012)
+            end
+        end
+        addCursorGlow()
+        applySoftness()
+    end
+
+    local function setStyle(i)
+        if type(i) == "number" and styleNames[i] then styleIndex = i end
+        rebuild()
+    end
+    local function setEnabled(value)
+        enabled = value == true
+        rebuild()
+    end
+    local function setOpacity(value)
+        opacity = math.clamp(tonumber(value) or opacity, 0.1, 0.9)
+    end
+    local function setSpeed(value)
+        motionSpeed = math.clamp(tonumber(value) or motionSpeed, 0.1, 1.8)
+    end
+    local function setDensity(value)
+        density = math.clamp(math.floor((tonumber(value) or density) + 0.5), 8, 36)
+        rebuild()
+    end
+    local function setSoftness(value)
+        softness = math.clamp(tonumber(value) or softness, 0.15, 1)
+        applySoftness()
+    end
+    local function setCursorStrength(value)
+        cursorStrength = math.clamp(tonumber(value) or cursorStrength, 0, 1.25)
+    end
+    local function setPanelTransparency(value)
+        value = math.clamp(tonumber(value) or 0.06, 0.02, 0.36)
+        for _, panel in pairs(panelRegistry) do
+            if panel and panel.Parent then panel.BackgroundTransparency = value end
+        end
+    end
+    local function setCornerRadius(value)
+        value = math.clamp(math.floor((tonumber(value) or 8) + 0.5), 2, 18)
+        for _, inst in ipairs(gui:GetDescendants()) do
+            if inst:IsA("UICorner") then inst.CornerRadius = UDim.new(0, value) end
+        end
+    end
+
+    onAccent(function(color)
+        backdropGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(8, 12, 22):Lerp(color, 0.12)),
+            ColorSequenceKeypoint.new(0.55, Color3.fromRGB(12, 14, 25):Lerp(color, 0.08)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(6, 8, 14)),
+        })
+        for _, p in ipairs(pieces) do
+            if p.obj and p.obj.Parent then
+                if p.obj:IsA("TextLabel") then
+                    p.obj.TextColor3 = color
+                    p.obj.TextStrokeColor3 = color
+                elseif p.obj:IsA("GuiObject") then
+                    p.obj.BackgroundColor3 = color
+                end
+                if p.stroke and p.stroke.Parent then p.stroke.Color = color end
+                if p.bloomStroke and p.bloomStroke.Parent then p.bloomStroke.Color = color end
+                if p.gradient and p.gradient.Parent then
+                    p.gradient.Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, color:Lerp(Color3.fromRGB(100, 120, 255), 0.18)),
+                        ColorSequenceKeypoint.new(0.5, color),
+                        ColorSequenceKeypoint.new(1, color:Lerp(Color3.fromRGB(125, 95, 255), 0.24)),
+                    })
+                end
+            end
+        end
+    end)
+
+    rebuild()
+    table.insert(connections, RunService.RenderStepped:Connect(function(dt)
+        if not enabled or not layer.Visible or not clickGui.Visible then return end
+        local now = os.clock()
+        local viewport = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
+        local mouse = UserInputService:GetMouseLocation()
+        local targetMouse = Vector2.new(
+            math.clamp(mouse.X / math.max(1, viewport.X), 0, 1),
+            math.clamp(mouse.Y / math.max(1, viewport.Y), 0, 1)
+        )
+        -- Exponential easing keeps the glow responsive without jittering.
+        smoothMouse = smoothMouse:Lerp(targetMouse, math.clamp(dt * 5.5, 0, 1))
+        if cursorGlowParts then
+            for _, glow in ipairs(cursorGlowParts) do
+                if glow.frame and glow.frame.Parent then
+                    glow.frame.Position = UDim2.fromScale(smoothMouse.X, smoothMouse.Y)
+                    glow.frame.BackgroundColor3 = accent
+                    glow.stroke.Color = accent
+                    glow.frame.Visible = cursorStrength > 0.01
+                    glow.stroke.Transparency = math.clamp(glow.baseStroke + (1 - cursorStrength) * 0.10, 0.65, 0.99)
+                end
+            end
+        end
+        backdropGradient.Rotation = 18 + (smoothMouse.X - 0.5) * cursorStrength * 8
+        if now - lastFrame < 1 / 30 then return end
+        local step = math.min(dt, 0.08) * motionSpeed
+        lastFrame = now
+        local parallaxX = (smoothMouse.X - 0.5) * cursorStrength * 0.035
+        local parallaxY = (smoothMouse.Y - 0.5) * cursorStrength * 0.035
+        for _, p in ipairs(pieces) do
+            local obj = p.obj
+            if obj and obj.Parent then
+                local pulse = 0.5 + 0.5 * math.sin(now * (0.52 + motionSpeed * 0.32) + p.phase)
+                if p.kind == "dot" or p.kind == "hex" then
+                    p.x += (p.vx or 0) * step
+                    p.y += (p.vy or 0) * step
+                    if p.x < 0.025 or p.x > 0.975 then p.vx = -(p.vx or 0); p.x = math.clamp(p.x, 0.025, 0.975) end
+                    if p.y < 0.04 or p.y > 0.96 then p.vy = -(p.vy or 0); p.y = math.clamp(p.y, 0.04, 0.96) end
+                    obj.Position = UDim2.fromScale(p.x + parallaxX, p.y + parallaxY)
+                    if obj:IsA("TextLabel") then
+                        obj.TextTransparency = 1 - opacity * p.alpha * (0.5 + 0.38 * pulse)
+                        obj.TextStrokeTransparency = math.clamp(0.92 - opacity * softness * (0.42 + pulse * 0.14), 0.48, 0.94)
+                    else
+                        obj.BackgroundTransparency = 1 - opacity * p.alpha * (0.32 + pulse * 0.58)
+                        if p.stroke then p.stroke.Transparency = math.clamp(0.94 - opacity * (0.32 + pulse * 0.2), 0.55, 0.96) end
+                    end
+                elseif p.kind == "line" then
+                    obj.Position = UDim2.fromScale(p.x + math.sin(now * 0.16 + p.phase) * p.drift + parallaxX,
+                        p.y + math.sin(now * 0.21 + p.phase) * p.drift * 0.8 + parallaxY)
+                    obj.Rotation = p.baseRotation + math.sin(now * 0.18 + p.phase) * 4
+                    obj.BackgroundTransparency = math.clamp(0.87 - opacity * p.alpha * (0.16 + 0.17 * pulse), 0.61, 0.94)
+                elseif p.kind == "ring" then
+                    local swell = 1 + pulse * 0.055 * softness
+                    obj.Position = UDim2.fromScale(p.x + math.sin(now * 0.12 + p.phase) * 0.012 + parallaxX,
+                        p.y + math.cos(now * 0.16 + p.phase) * 0.016 + parallaxY)
+                    obj.Size = UDim2.fromOffset(p.size * swell, p.size * swell)
+                    if p.stroke then p.stroke.Transparency = math.clamp(0.96 - opacity * (0.36 + pulse * 0.14), 0.61, 0.97) end
+                    if p.bloom then
+                        p.bloom.Position = obj.Position
+                        p.bloom.Size = UDim2.fromOffset((p.size + 10) * swell, (p.size + 10) * swell)
+                    end
+                    if p.bloomStroke then p.bloomStroke.Transparency = math.clamp(0.99 - opacity * softness * (0.16 + pulse * 0.09), 0.82, 0.99) end
+                end
+            end
+        end
+    end))
+
+    return {
+        styleNames = styleNames,
+        getStyle = function() return styleIndex end,
+        setStyle = setStyle,
+        setEnabled = setEnabled,
+        setOpacity = setOpacity,
+        setSpeed = setSpeed,
+        setDensity = setDensity,
+        setSoftness = setSoftness,
+        setCursorStrength = setCursorStrength,
+        setPanelTransparency = setPanelTransparency,
+        setCornerRadius = setCornerRadius,
+    }
+end)()
+
+-- Live palette controller for the UI chrome (world lighting and the shared accent are independent).
+local uiThemeController = (function()
+    local names = {"Midnight", "Deep Ocean", "Graphite", "Violet Dusk", "Ice Terminal"}
+    local palettes = {
+        {bg = Color3.fromRGB(13, 16, 23), header = Color3.fromRGB(8, 11, 17), row = Color3.fromRGB(22, 27, 37), sub = Color3.fromRGB(16, 21, 31), text = Color3.fromRGB(232, 238, 248), dim = Color3.fromRGB(145, 155, 174)},
+        {bg = Color3.fromRGB(9, 21, 30), header = Color3.fromRGB(5, 13, 21), row = Color3.fromRGB(16, 34, 46), sub = Color3.fromRGB(11, 27, 38), text = Color3.fromRGB(225, 242, 250), dim = Color3.fromRGB(132, 171, 190)},
+        {bg = Color3.fromRGB(22, 23, 27), header = Color3.fromRGB(12, 13, 16), row = Color3.fromRGB(35, 37, 43), sub = Color3.fromRGB(27, 29, 35), text = Color3.fromRGB(238, 239, 242), dim = Color3.fromRGB(157, 160, 169)},
+        {bg = Color3.fromRGB(21, 15, 32), header = Color3.fromRGB(11, 8, 18), row = Color3.fromRGB(35, 25, 49), sub = Color3.fromRGB(27, 19, 39), text = Color3.fromRGB(242, 235, 252), dim = Color3.fromRGB(174, 153, 198)},
+        {bg = Color3.fromRGB(12, 18, 27), header = Color3.fromRGB(5, 10, 17), row = Color3.fromRGB(25, 36, 50), sub = Color3.fromRGB(17, 27, 40), text = Color3.fromRGB(241, 247, 255), dim = Color3.fromRGB(165, 184, 205)},
+    }
+    local fontNames = {"Gotham", "Source Sans", "Code", "Arial"}
+    local fontPairs = {
+        {regular = Enum.Font.GothamMedium, bold = Enum.Font.GothamBold},
+        {regular = Enum.Font.SourceSans, bold = Enum.Font.SourceSansBold},
+        {regular = Enum.Font.Code, bold = Enum.Font.Code},
+        {regular = Enum.Font.Arial, bold = Enum.Font.ArialBold},
+    }
+    local fontIndex = 1
+    local index = 1
+    local function apply(i)
+        if type(i) == "number" and palettes[i] then index = i end
+        local p = palettes[index]
+        BG, HEADER, ROW, SUB, TEXT, DIM = p.bg, p.header, p.row, p.sub, p.text, p.dim
+        local colors = {panel = BG, header = HEADER, row = ROW, sub = SUB, text = TEXT, muted = DIM,
+            backdrop = BG}
+        for _, obj in ipairs(gui:GetDescendants()) do
+            local role = obj:GetAttribute("TrueSightRole")
+            if role and colors[role] then
+                if obj:IsA("GuiObject") then
+                    local baseColor = colors[role]
+                    if role == "row" and obj:GetAttribute("TrueSightModuleEnabled") == true then
+                        baseColor = ROW:Lerp(accent, 0.12)
+                    end
+                    obj.BackgroundColor3 = baseColor
+                end
+                if role == "text" and (obj:IsA("TextLabel") or obj:IsA("TextButton")) then
+                    obj.TextColor3 = TEXT
+                elseif role == "muted" and (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then
+                    obj.TextColor3 = DIM
+                end
+            elseif role == "accent-stroke" and obj:IsA("UIStroke") then
+                obj.Color = accent
+            elseif role == "header-gradient" and obj:IsA("UIGradient") then
+                obj.Color = ColorSequence.new(HEADER, BG:Lerp(accent, 0.07))
+            elseif role == "backdrop-gradient" and obj:IsA("UIGradient") then
+                obj.Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0, BG:Lerp(accent, 0.10)),
+                    ColorSequenceKeypoint.new(0.55, HEADER:Lerp(accent, 0.05)),
+                    ColorSequenceKeypoint.new(1, HEADER),
+                })
+            end
+        end
+    end
+    local function setFont(i)
+        if type(i) == "number" and fontPairs[i] then fontIndex = i end
+        local pair = fontPairs[fontIndex]
+        FONT = pair.regular
+        FONTB = pair.bold
+        for _, obj in ipairs(gui:GetDescendants()) do
+            if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+                local weight = obj:GetAttribute("TrueSightFontWeight")
+                local useBold = weight == "bold"
+                if weight == nil then
+                    useBold = (obj:IsA("TextLabel") and obj.TextSize >= 14)
+                        or (obj:IsA("TextButton") and obj.TextSize >= 15)
+                end
+                obj.Font = useBold and pair.bold or pair.regular
+            end
+        end
+    end
+    return {
+        names = names,
+        apply = apply,
+        getIndex = function() return index end,
+        fontNames = fontNames,
+        setFont = setFont,
+        getFontIndex = function() return fontIndex end,
+    }
+end)()
+
 local function startStatsDrag(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
         dragTarget = statsFrame
         dragStartMouse = input.Position
-        dragStartPos = statsFrame.Position
+        dragStartPos = {position = statsFrame.Position, absolute = statsFrame.AbsolutePosition}
     end
 end
 statsHeader.InputBegan:Connect(startStatsDrag)
@@ -2211,36 +2762,384 @@ local function styleButton(b)
     b.TextSize = 13
     b.TextColor3 = DIM
     b.TextXAlignment = Enum.TextXAlignment.Left
+    b:SetAttribute("TrueSightRole", "row")
+    corner(b, 6)
+    local stroke = Instance.new("UIStroke")
+    stroke.Name = "TrueSightControlStroke"
+    stroke.Color = accent
+    stroke.Thickness = 1
+    stroke.Transparency = 0.91
+    stroke.Parent = b
+    stroke:SetAttribute("TrueSightRole", "accent-stroke")
+    onAccent(function(c) if stroke.Parent then stroke.Color = c end end)
+    local hoverTween
+    local function setButtonBase()
+        local role = b:GetAttribute("TrueSightRole")
+        if role == "sub" then return SUB end
+        if b:GetAttribute("TrueSightModuleEnabled") == true then return ROW:Lerp(accent, 0.12) end
+        return ROW
+    end
+    b.MouseEnter:Connect(function()
+        if hoverTween then hoverTween:Cancel() end
+        local base = setButtonBase()
+        hoverTween = TweenService:Create(b, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundColor3 = base:Lerp(accent, 0.13),
+        })
+        hoverTween:Play()
+        if stroke.Parent then stroke.Transparency = 0.62 end
+    end)
+    b.MouseLeave:Connect(function()
+        if hoverTween then hoverTween:Cancel() end
+        hoverTween = TweenService:Create(b, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundColor3 = setButtonBase(),
+        })
+        hoverTween:Play()
+        if stroke.Parent then stroke.Transparency = 0.91 end
+    end)
 end
 
 local panelStatesByFrame = setmetatable({}, {__mode = "k"})
 local fallbackOrder = 0
+local panelColumns = {Visual = 1, Render = 2, World = 3, Client = 4, HUD = 5, Config = 6}
+local function responsivePanelWidth(viewportWidth)
+    -- Reserve a separate right-hand lane for the Stand preview. At wide resolutions
+    -- the module panels retain their full width and the extra space becomes breathing room.
+    local minimum = viewportWidth >= 1120 and 132 or 108
+    return math.floor(math.clamp((viewportWidth - 36 - 40 - 8 - 286) / 6, minimum, 192))
+end
+
+local uiInteraction = (function()
+    local state = {layoutRefs = {}, resizeState = nil, dropdownPopup = nil, dropdownOwner = nil, grips = {}}
+
+    local function closeDropdown()
+        if state.dropdownPopup and state.dropdownPopup.Parent then state.dropdownPopup:Destroy() end
+        state.dropdownPopup = nil
+        state.dropdownOwner = nil
+    end
+
+    local function openDropdown(anchor, label, options, selectedIndex, choose)
+        closeDropdown()
+        if not anchor or not anchor.Parent or type(options) ~= "table" or #options == 0 then return end
+        local viewport = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
+        local width = math.min(math.max(anchor.AbsoluteSize.X, 174), math.max(140, viewport.X - 16))
+        local height = math.min(#options * 27 + 10, 226, math.max(100, viewport.Y - 16))
+        local x = math.clamp(anchor.AbsolutePosition.X, 8, math.max(8, viewport.X - width - 8))
+        local below = anchor.AbsolutePosition.Y + anchor.AbsoluteSize.Y + 3
+        local y = below + height <= viewport.Y - 8 and below or (anchor.AbsolutePosition.Y - height - 3)
+        y = math.clamp(y, 8, math.max(8, viewport.Y - height - 8))
+
+        local popup = Instance.new("Frame")
+        popup.Name = "TrueSightDropdownPopup"
+        popup.Position = UDim2.fromOffset(x, y)
+        popup.Size = UDim2.fromOffset(width, height)
+        popup.BackgroundColor3 = BG
+        popup.BackgroundTransparency = 0.02
+        popup.BorderSizePixel = 0
+        popup.ClipsDescendants = true
+        popup.Active = true
+        popup.ZIndex = 900
+        popup.Parent = gui
+        corner(popup, 8)
+        local outline = Instance.new("UIStroke")
+        outline.Color = accent
+        outline.Thickness = 1.25
+        outline.Transparency = 0.12
+        outline.Parent = popup
+
+        local list = Instance.new("ScrollingFrame")
+        list.Name = "Options"
+        list.Position = UDim2.fromOffset(4, 4)
+        list.Size = UDim2.new(1, -8, 1, -8)
+        list.BackgroundTransparency = 1
+        list.BorderSizePixel = 0
+        list.ScrollBarThickness = 3
+        list.ScrollBarImageColor3 = accent
+        list.CanvasSize = UDim2.new(0, 0, 0, 0)
+        list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        list.ScrollingDirection = Enum.ScrollingDirection.Y
+        list.Active = true
+        list.ZIndex = 901
+        list.Parent = popup
+        local layout = vlist(list)
+        layout.Padding = UDim.new(0, 3)
+        local pad = Instance.new("UIPadding")
+        pad.PaddingBottom = UDim.new(0, 2)
+        pad.Parent = list
+
+        for i, option in ipairs(options) do
+            local opt = Instance.new("TextButton")
+            opt.Name = "Option_" .. tostring(i)
+            opt.LayoutOrder = i
+            opt.Size = UDim2.new(1, -2, 0, 25)
+            opt.BackgroundColor3 = i == selectedIndex and ROW:Lerp(accent, 0.24) or ROW
+            opt.BorderSizePixel = 0
+            opt.AutoButtonColor = false
+            opt.TextColor3 = i == selectedIndex and TEXT or DIM
+            opt.TextSize = 12
+            opt.Font = FONT
+            opt.TextXAlignment = Enum.TextXAlignment.Left
+            opt.TextTruncate = Enum.TextTruncate.AtEnd
+            opt.Text = (i == selectedIndex and "  ✓  " or "      ") .. tostring(option)
+            opt.ZIndex = 902
+            opt.Parent = list
+            corner(opt, 5)
+            local optStroke = Instance.new("UIStroke")
+            optStroke.Color = accent
+            optStroke.Transparency = i == selectedIndex and 0.72 or 0.96
+            optStroke.Parent = opt
+            opt.MouseEnter:Connect(function()
+                opt.BackgroundColor3 = ROW:Lerp(accent, 0.20)
+                if optStroke.Parent then optStroke.Transparency = 0.55 end
+            end)
+            opt.MouseLeave:Connect(function()
+                opt.BackgroundColor3 = i == selectedIndex and ROW:Lerp(accent, 0.24) or ROW
+                if optStroke.Parent then optStroke.Transparency = i == selectedIndex and 0.72 or 0.96 end
+            end)
+            opt.MouseButton1Click:Connect(function()
+                closeDropdown()
+                choose(i)
+            end)
+        end
+        state.dropdownPopup = popup
+        state.dropdownOwner = anchor
+    end
+
+    local function addResizeGrip(target, kind)
+        local grip = Instance.new("TextButton")
+        grip.Name = "TrueSightResizeGrip"
+        grip.AnchorPoint = Vector2.new(0, 0)
+        grip.Position = UDim2.new(1, -20, 1, -20)
+        grip.Size = UDim2.fromOffset(18, 18)
+        grip.BackgroundColor3 = SUB
+        grip.BackgroundTransparency = 0.08
+        grip.BorderSizePixel = 0
+        grip.AutoButtonColor = false
+        grip.Text = "◢"
+        grip.TextSize = 12
+        grip.Font = FONTB
+        grip.TextColor3 = accent
+        grip.TextXAlignment = Enum.TextXAlignment.Center
+        grip.TextYAlignment = Enum.TextYAlignment.Center
+        grip.ZIndex = 880
+        grip.Parent = gui
+        corner(grip, 5)
+        table.insert(state.grips, {target = target, grip = grip, kind = kind})
+        local line = Instance.new("UIStroke")
+        line.Color = accent
+        line.Transparency = 0.25
+        line.Thickness = 1
+        line.Parent = grip
+        onAccent(function(color)
+            if grip.Parent then grip.TextColor3 = color end
+            if line.Parent then line.Color = color end
+        end)
+        grip.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragTarget = nil
+                state.resizeState = {
+                    target = target,
+                    startMouse = input.Position,
+                    startSize = target.Size,
+                    minW = kind == "preview" and 220 or 132,
+                    minH = kind == "preview" and 220 or 250,
+                    maxW = math.max(kind == "preview" and 220 or 132, ((cam() and cam().ViewportSize.X) or 1280) - 16),
+                    maxH = math.max(kind == "preview" and 220 or 250, ((cam() and cam().ViewportSize.Y) or 720) - 16),
+                }
+            end
+        end)
+        return grip
+    end
+
+    local function clampObject(object)
+        if not object or not object.Parent then return end
+        local viewport = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
+        local size = object.AbsoluteSize
+        local screenX = math.clamp(object.AbsolutePosition.X, 8, math.max(8, viewport.X - size.X - 8))
+        local screenY = math.clamp(object.AbsolutePosition.Y, 28, math.max(28, viewport.Y - size.Y - 8))
+        -- Position is relative to the parent's origin, not the screen. Subtract
+        -- the parent's absolute position before writing the clamped coordinates.
+        local parentOrigin = Vector2.new(0, 0)
+        local parentSize = viewport
+        if object.Parent:IsA("GuiObject") then
+            parentOrigin = object.Parent.AbsolutePosition
+            parentSize = object.Parent.AbsoluteSize
+        end
+        local scaleX = object.Position.X.Scale
+        local scaleY = object.Position.Y.Scale
+        object.Position = UDim2.new(
+            scaleX, screenX - parentOrigin.X + object.AnchorPoint.X * size.X - scaleX * parentSize.X,
+            scaleY, screenY - parentOrigin.Y + object.AnchorPoint.Y * size.Y - scaleY * parentSize.Y
+        )
+    end
+
+    local function clampAll()
+        local viewport = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
+        for _, panel in pairs(panelRegistry) do
+            if panel and panel.Parent then
+                panel.Size = UDim2.fromOffset(math.min(panel.Size.X.Offset, viewport.X - 16), math.min(panel.Size.Y.Offset, viewport.Y - 24))
+                clampObject(panel)
+            end
+        end
+        if state.layoutRefs.StandPreview and state.layoutRefs.StandPreview.Parent then
+            local preview = state.layoutRefs.StandPreview
+            preview.Size = UDim2.fromOffset(math.min(preview.Size.X.Offset, viewport.X - 16), math.min(preview.Size.Y.Offset, viewport.Y - 16))
+            clampObject(preview)
+        end
+    end
+
+    local function resetLayout()
+        local viewport = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
+        local width = responsivePanelWidth(viewport.X)
+        local height = math.max(220, math.min(690, viewport.Y - 92))
+        for title, panel in pairs(panelRegistry) do
+            local col = panelColumns[title] or 1
+            panel.AnchorPoint = Vector2.new(0, 0)
+            panel.Size = UDim2.fromOffset(width, height)
+            panel.Position = UDim2.fromOffset(18 + (col - 1) * (width + 8), 72)
+        end
+        local preview = state.layoutRefs.StandPreview
+        if preview and preview.Parent then
+            local panelRight = 18 + 6 * width + 40
+            local freeRight = viewport.X - 18
+            local freeWidth = math.max(72, freeRight - panelRight)
+            local previewWidth = math.max(220, math.min(286, freeWidth - 16))
+            local previewHeight = math.max(220, math.min(356, viewport.Y - 100))
+            preview.AnchorPoint = Vector2.new(0, 0)
+            preview.Size = UDim2.fromOffset(math.min(previewWidth, viewport.X - 16), previewHeight)
+            preview.Position = UDim2.fromOffset(panelRight + (freeWidth - previewWidth) / 2, math.max(28, viewport.Y - previewHeight - 18))
+        end
+        clampAll()
+    end
+
+    table.insert(connections, UserInputService.InputBegan:Connect(function(input)
+        if not state.dropdownPopup then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local popup = state.dropdownPopup
+        if not popup or not popup.Parent then closeDropdown(); return end
+        local pos = input.Position
+        local pp, ps = popup.AbsolutePosition, popup.AbsoluteSize
+        local inPopup = pos.X >= pp.X and pos.X <= pp.X + ps.X and pos.Y >= pp.Y and pos.Y <= pp.Y + ps.Y
+        local owner = state.dropdownOwner
+        local inOwner = owner and owner.Parent and pos.X >= owner.AbsolutePosition.X and pos.X <= owner.AbsolutePosition.X + owner.AbsoluteSize.X
+            and pos.Y >= owner.AbsolutePosition.Y and pos.Y <= owner.AbsolutePosition.Y + owner.AbsoluteSize.Y
+        if not inPopup and not inOwner then closeDropdown() end
+    end))
+
+    table.insert(connections, RunService.RenderStepped:Connect(function()
+        for i = #state.grips, 1, -1 do
+            local entry = state.grips[i]
+            local target, grip = entry.target, entry.grip
+            if not target or not target.Parent or not grip or not grip.Parent then
+                table.remove(state.grips, i)
+            else
+                local pos, size = target.AbsolutePosition, target.AbsoluteSize
+                grip.Position = UDim2.fromOffset(pos.X + size.X - 20, pos.Y + size.Y - 20)
+                grip.Visible = target.Visible and target:IsDescendantOf(gui)
+                    and (not target:IsDescendantOf(clickGui) or clickGui.Visible)
+            end
+        end
+    end))
+
+    local camera = cam()
+    if camera then
+        table.insert(connections, camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            task.defer(clampAll)
+            closeDropdown()
+        end))
+    end
+
+    return {
+        layoutRefs = state.layoutRefs,
+        addResizeGrip = addResizeGrip,
+        openDropdown = openDropdown,
+        closeDropdown = closeDropdown,
+        clampObject = clampObject,
+        clampAll = clampAll,
+        resetLayout = resetLayout,
+        resizeState = state,
+    }
+end)()
 
 local function makePanel(title, x)
     local panel = Instance.new("Frame")
     panel.Name = title
-    panel.Size = UDim2.fromOffset(185, 0)
-    panel.AutomaticSize = Enum.AutomaticSize.Y
-    panel.Position = UDim2.fromOffset(x, 80)
+    local camera = cam()
+    local viewportWidth = (camera and camera.ViewportSize.X) or 1280
+    local viewportHeight = (camera and camera.ViewportSize.Y) or 800
+    local panelWidth = responsivePanelWidth(viewportWidth)
+    local panelX = 18 + ((panelColumns[title] or 1) - 1) * (panelWidth + 8)
+    local panelHeight = math.max(220, math.min(690, viewportHeight - 92))
+    panel.Size = UDim2.fromOffset(panelWidth, panelHeight)
+    panel.Position = UDim2.fromOffset(panelX, 72)
     panel.BackgroundColor3 = BG
+    panel.BackgroundTransparency = 0.05
     panel.BorderSizePixel = 0
     panel.ClipsDescendants = true
     panel.Parent = clickGui
+    panel:SetAttribute("TrueSightRole", "panel")
     panelRegistry[title] = panel
-    corner(panel, 6)
+    uiInteraction.layoutRefs[title] = panel
+    corner(panel, 10)
+    local panelStroke = Instance.new("UIStroke")
+    panelStroke.Name = "TrueSightPanelStroke"
+    panelStroke.Color = accent
+    panelStroke.Thickness = 1
+    panelStroke.Transparency = 0.75
+    panelStroke.Parent = panel
+    panelStroke:SetAttribute("TrueSightRole", "accent-stroke")
+    onAccent(function(c) if panelStroke.Parent then panelStroke.Color = c end end)
     vlist(panel)
 
     local header = Instance.new("TextButton")
     header.LayoutOrder = 0
-    header.Size = UDim2.new(1, 0, 0, 32)
+    header.Size = UDim2.new(1, 0, 0, 42)
     header.BackgroundColor3 = HEADER
     header.BorderSizePixel = 0
     header.AutoButtonColor = false
     header.Font = FONTB
     header.TextSize = 14
     header.TextColor3 = TEXT
-    header.Text = string.upper(title)
+    header.Text = ""
     header.Parent = panel
+    header:SetAttribute("TrueSightRole", "header")
+    local headerGradient = Instance.new("UIGradient")
+    headerGradient.Rotation = 0
+    headerGradient.Color = ColorSequence.new(HEADER, BG:Lerp(accent, 0.07))
+    headerGradient.Parent = header
+    headerGradient:SetAttribute("TrueSightRole", "header-gradient")
+    onAccent(function(c)
+        if headerGradient.Parent then headerGradient.Color = ColorSequence.new(HEADER, BG:Lerp(c, 0.07)) end
+    end)
+
+    local panelTitle = Instance.new("TextLabel")
+    panelTitle.Name = "PanelTitle"
+    panelTitle.Position = UDim2.fromOffset(13, 5)
+    panelTitle.Size = UDim2.new(1, -24, 0, 19)
+    panelTitle.BackgroundTransparency = 1
+    panelTitle.Font = FONTB
+    panelTitle.TextSize = 13
+    panelTitle.TextXAlignment = Enum.TextXAlignment.Left
+    panelTitle.TextColor3 = TEXT
+    panelTitle.Text = string.upper(title)
+    panelTitle.Active = false
+    panelTitle.Parent = header
+    panelTitle:SetAttribute("TrueSightRole", "text")
+    panelTitle:SetAttribute("TrueSightFontWeight", "bold")
+
+    local panelSubtitle = Instance.new("TextLabel")
+    panelSubtitle.Name = "PanelSubtitle"
+    panelSubtitle.Position = UDim2.fromOffset(13, 23)
+    panelSubtitle.Size = UDim2.new(1, -24, 0, 12)
+    panelSubtitle.BackgroundTransparency = 1
+    panelSubtitle.Font = FONT
+    panelSubtitle.TextSize = 9
+    panelSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+    panelSubtitle.TextColor3 = DIM
+    panelSubtitle.Text = ({Visual = "COSMETICS / FX", Render = "CAMERA / QUALITY", World = "ENVIRONMENT", HUD = "OVERLAYS / INFO", Client = "CONTROLS / TOOLS", Config = "PROFILES / STORAGE"})[title] or "TRUESIGHT MODULES"
+    panelSubtitle.Active = false
+    panelSubtitle.Parent = header
+    panelSubtitle:SetAttribute("TrueSightRole", "muted")
+    panelSubtitle:SetAttribute("TrueSightFontWeight", "regular")
 
     local line = Instance.new("Frame")
     line.AnchorPoint = Vector2.new(0, 1)
@@ -2250,17 +3149,45 @@ local function makePanel(title, x)
     line.Parent = header
     onAccent(function(c) line.BackgroundColor3 = c end)
 
+    local content = Instance.new("ScrollingFrame")
+    content.Name = "PanelContent"
+    content.LayoutOrder = 1
+    content.Size = UDim2.new(1, 0, 1, -42)
+    content.BackgroundTransparency = 1
+    content.BorderSizePixel = 0
+    content.ScrollBarThickness = 3
+    content.ScrollBarImageColor3 = accent
+    content.ScrollBarImageTransparency = 0.25
+    content.ScrollingDirection = Enum.ScrollingDirection.Y
+    content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    content.CanvasSize = UDim2.new(0, 0, 0, 0)
+    content.Active = true
+    content.ClipsDescendants = true
+    content.Parent = panel
+    content:SetAttribute("TrueSightRole", "content")
+    local contentPadding = Instance.new("UIPadding")
+    contentPadding.PaddingLeft = UDim.new(0, 6)
+    contentPadding.PaddingRight = UDim.new(0, 6)
+    contentPadding.PaddingTop = UDim.new(0, 6)
+    contentPadding.PaddingBottom = UDim.new(0, 8)
+    contentPadding.Parent = content
+    local contentLayout = vlist(content)
+    contentLayout.Padding = UDim.new(0, 4)
+    onAccent(function(c) if content and content.Parent then content.ScrollBarImageColor3 = c end end)
+
     header.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
             dragTarget = panel
             dragStartMouse = input.Position
-            dragStartPos = panel.Position
+            dragStartPos = {position = panel.Position, absolute = panel.AbsolutePosition}
         end
     end)
 
-    local state = {frame = panel, n = 0}
+    local state = {frame = content, n = 0, panel = panel}
     panelStatesByFrame[panel] = state
+    panelStatesByFrame[content] = state
+    uiInteraction.addResizeGrip(panel, "panel")
     return state
 end
 
@@ -2301,23 +3228,40 @@ local function nextOrder(panel)
     return state.n
 end
 
--- Cycle widget: click to step through options
+-- Dropdown widget: choices open in a top-layer popup, so scroll clipping cannot hide them.
 local function addCycle(parent, label, options, start, onChange, key)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, 0, 0, 24)
+    b.Size = UDim2.new(1, 0, 0, 38)
     styleButton(b)
-    b.BackgroundColor3 = SUB
-    b.TextSize = 12
-    local idx = start
+    b.BackgroundColor3 = ROW
+    b.TextColor3 = TEXT
+    b:SetAttribute("TrueSightRole", "row")
+    b.TextSize = 11
+    b.TextWrapped = true
+    b.TextYAlignment = Enum.TextYAlignment.Center
+    b.TextTruncate = Enum.TextTruncate.AtEnd
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, 9)
+    padding.PaddingRight = UDim.new(0, 7)
+    padding.Parent = b
+    local idx = math.clamp(tonumber(start) or 1, 1, math.max(1, #options))
     local function refresh()
-        b.Text = "      " .. label .. ":  " .. options[idx]
+        b.Text = label .. "   ▾\n" .. tostring(options[idx])
     end
     refresh()
-    b.MouseButton1Click:Connect(function()
-        idx = idx % #options + 1
+    local function choose(i)
+        if not options[i] then return end
+        idx = i
         refresh()
         onChange(idx)
         requestSave()
+    end
+    b.MouseButton1Click:Connect(function()
+        if uiInteraction.resizeState and uiInteraction.resizeState.dropdownPopup and uiInteraction.resizeState.dropdownOwner == b then
+            uiInteraction.closeDropdown()
+        else
+            uiInteraction.openDropdown(b, label, options, idx, choose)
+        end
     end)
     if key then
         registerConfig(key, function() return idx end, function(i)
@@ -2332,8 +3276,7 @@ local function addCycle(parent, label, options, start, onChange, key)
     return {
         button = b,
         set = function(i)
-            idx = i
-            refresh()
+            if type(i) == "number" and options[i] then idx = i; refresh() end
         end,
     }
 end
@@ -2342,8 +3285,16 @@ end
 local function addSlider(parent, label, minV, maxV, value, step, onChange, key)
     local f = Instance.new("Frame")
     f.Size = UDim2.new(1, 0, 0, 34)
-    f.BackgroundColor3 = SUB
+    f.BackgroundColor3 = ROW
     f.BorderSizePixel = 0
+    f:SetAttribute("TrueSightRole", "row")
+    corner(f, 6)
+    local fStroke = Instance.new("UIStroke")
+    fStroke.Color = accent
+    fStroke.Transparency = 0.82
+    fStroke.Parent = f
+    fStroke:SetAttribute("TrueSightRole", "accent-stroke")
+    onAccent(function(c) if fStroke.Parent then fStroke.Color = c end end)
 
     local t = Instance.new("TextLabel")
     t.Position = UDim2.fromOffset(18, 3)
@@ -2353,12 +3304,13 @@ local function addSlider(parent, label, minV, maxV, value, step, onChange, key)
     t.TextSize = 12
     t.TextColor3 = DIM
     t.TextXAlignment = Enum.TextXAlignment.Left
+    t:SetAttribute("TrueSightRole", "muted")
     t.Parent = f
 
     local track = Instance.new("Frame")
     track.Position = UDim2.fromOffset(18, 24)
     track.Size = UDim2.new(1, -36, 0, 4)
-    track.BackgroundColor3 = Color3.fromRGB(45, 48, 58)
+    track.BackgroundColor3 = Color3.fromRGB(38, 44, 57)
     track.BorderSizePixel = 0
     track.Parent = f
     corner(track, 2)
@@ -2421,8 +3373,14 @@ local function addModule(panel, name, onToggle)
     holder.AutomaticSize = Enum.AutomaticSize.Y
     holder.BackgroundTransparency = 1
     holder.Parent = panel.frame
+    local holderPadding = Instance.new("UIPadding")
+    holderPadding.PaddingLeft = UDim.new(0, 0)
+    holderPadding.PaddingRight = UDim.new(0, 0)
+    holderPadding.PaddingTop = UDim.new(0, 2)
+    holderPadding.PaddingBottom = UDim.new(0, 2)
+    holderPadding.Parent = holder
     mod.holder = holder
-    mod.panel = panel.frame
+    mod.panel = panel.panel or panel.frame
     vlist(holder)
 
     local btn = Instance.new("TextButton")
@@ -2431,6 +3389,8 @@ local function addModule(panel, name, onToggle)
     styleButton(btn)
     btn.Text = "   " .. name
     btn.Parent = holder
+    btn.TextSize = 12
+    btn:SetAttribute("TrueSightRole", "row")
 
     local bar = Instance.new("Frame")
     bar.Size = UDim2.new(0, 3, 1, 0)
@@ -2446,6 +3406,14 @@ local function addModule(panel, name, onToggle)
     settings.BorderSizePixel = 0
     settings.Visible = false
     settings.Parent = holder
+    settings:SetAttribute("TrueSightRole", "sub")
+    corner(settings, 6)
+    local settingsPadding = Instance.new("UIPadding")
+    settingsPadding.PaddingLeft = UDim.new(0, 5)
+    settingsPadding.PaddingRight = UDim.new(0, 5)
+    settingsPadding.PaddingTop = UDim.new(0, 4)
+    settingsPadding.PaddingBottom = UDim.new(0, 4)
+    settingsPadding.Parent = settings
     vlist(settings)
 
     local arrow
@@ -2453,19 +3421,25 @@ local function addModule(panel, name, onToggle)
         if mod.hasSettings then return end
         mod.hasSettings = true
         arrow = Instance.new("TextLabel")
+        arrow.Name = "SettingsToggle"
         arrow.AnchorPoint = Vector2.new(1, 0)
-        arrow.Position = UDim2.new(1, -6, 0, 0)
-        arrow.Size = UDim2.fromOffset(20, 28)
+        arrow.Position = UDim2.new(1, -3, 0, 0)
+        arrow.Size = UDim2.fromOffset(25, 28)
         arrow.BackgroundTransparency = 1
+        arrow.Active = false
         arrow.Font = FONTB
         arrow.TextSize = 14
         arrow.TextColor3 = DIM
         arrow.Text = "+"
+        arrow.ZIndex = btn.ZIndex + 2
         arrow.Parent = btn
+        arrow:SetAttribute("TrueSightRole", "muted")
     end
 
     local function refresh()
         btn.TextColor3 = mod.enabled and accent or DIM
+        btn:SetAttribute("TrueSightModuleEnabled", mod.enabled)
+        btn.BackgroundColor3 = mod.enabled and ROW:Lerp(accent, 0.12) or ROW
         bar.Visible = mod.enabled
         bar.BackgroundColor3 = accent
     end
@@ -2482,21 +3456,29 @@ local function addModule(panel, name, onToggle)
         requestSave()
     end
 
+    local settingOrder = 0
     function mod.cycle(label, options, start, onChange)
         markSettings()
-        return addCycle(settings, label, options, start, onChange, name .. "/" .. label)
+        local widget = addCycle(settings, label, options, start, onChange, name .. "/" .. label)
+        widget.button.LayoutOrder = settingOrder
+        settingOrder += 1
+        return widget
     end
 
     function mod.slider(label, minV, maxV, value, step, onChange)
         markSettings()
-        return addSlider(settings, label, minV, maxV, value, step, onChange, name .. "/" .. label)
+        local widget = addSlider(settings, label, minV, maxV, value, step, onChange, name .. "/" .. label)
+        widget.LayoutOrder = settingOrder
+        settingOrder += 1
+        return widget
     end
 
     local bindButton = Instance.new("TextButton")
-    bindButton.LayoutOrder = 99
+    bindButton.LayoutOrder = 9999
     bindButton.Size = UDim2.new(1, 0, 0, 25)
     styleButton(bindButton)
     bindButton.BackgroundColor3 = SUB
+    bindButton:SetAttribute("TrueSightRole", "sub")
     bindButton.TextSize = 12
     bindButton.Parent = settings
     local function refreshBindButton()
@@ -2525,13 +3507,24 @@ local function addModule(panel, name, onToggle)
     end)
     refreshBindButton()
 
-    btn.MouseButton1Click:Connect(function() mod.set(not mod.enabled) end)
-    btn.MouseButton2Click:Connect(function()
-        if mod.hasSettings then
-            settings.Visible = not settings.Visible
-            arrow.Text = settings.Visible and "-" or "+"
+    local function toggleSettings()
+        if not mod.hasSettings then return end
+        settings.Visible = not settings.Visible
+        if arrow then arrow.Text = settings.Visible and "−" or "+" end
+        if settings.Visible then
+            hint.Text = "Settings opened for " .. name .. "  |  choose an option from a dropdown"
+        end
+    end
+    btn.MouseButton1Click:Connect(function()
+        local mouse = UserInputService:GetMouseLocation()
+        local onSettingsToggle = mod.hasSettings and mouse.X >= (btn.AbsolutePosition.X + btn.AbsoluteSize.X - 30)
+        if onSettingsToggle then
+            toggleSettings()
+        else
+            mod.set(not mod.enabled)
         end
     end)
+    btn.MouseButton2Click:Connect(toggleSettings)
 
     onAccent(function() refresh() end)
     table.insert(modules, mod)
@@ -2550,6 +3543,7 @@ local function addAction(panel, text, callback)
     b.Size = UDim2.new(1, 0, 0, 28)
     styleButton(b)
     b.TextColor3 = TEXT
+    b:SetAttribute("TrueSightRole", "row")
     b.Text = "   " .. text
     b.MouseButton1Click:Connect(callback)
     b.Parent = state.frame
@@ -2567,6 +3561,14 @@ local function addTextInput(panel, title, placeholder, initialValue, onCommit, k
     box.Size = UDim2.new(1, 0, 0, 30)
     box.BackgroundColor3 = SUB
     box.BorderSizePixel = 0
+    box:SetAttribute("TrueSightRole", "sub")
+    corner(box, 6)
+    local boxStroke = Instance.new("UIStroke")
+    boxStroke.Color = accent
+    boxStroke.Transparency = 0.9
+    boxStroke.Parent = box
+    boxStroke:SetAttribute("TrueSightRole", "accent-stroke")
+    onAccent(function(c) if boxStroke.Parent then boxStroke.Color = c end end)
     box.ClearTextOnFocus = false
     box.Font = FONT
     box.TextSize = 12
@@ -2612,7 +3614,7 @@ end)
 -- reaches that limit before the Desync Box module is declared.
 local visualModules = {}
 ;(function()
-local visualPanel = makePanel("Visual", 30)
+local visualPanel = makePanel("Visual", 28)
 
 local hatMod = addModule(visualPanel, "China Hat", function(on)
     if on then
@@ -2646,7 +3648,7 @@ local auraMod = addModule(visualPanel, "Aura", function(on)
         removeAura()
     end
 end)
-auraMod.cycle("Style", {"Sparkles", "Embers", "Soft Glow"}, auraStyle, function(i)
+auraMod.cycle("Style", {"Sparkles", "Embers", "Soft Glow", "Smoke Drift", "Prismatic", "Void Pulse"}, auraStyle, function(i)
     auraStyle = i
     if auraMod.enabled and player.Character then addAura(player.Character) end
 end)
@@ -2675,43 +3677,22 @@ standAuraMod.slider("Intensity", 0.5, 2.5, standAuraIntensity, 0.1, function(v)
     updateStandAuraIntensity()
 end)
 
-local standAuraScanButton = Instance.new("TextButton")
-standAuraScanButton.Size = UDim2.new(1, 0, 0, 27)
-styleButton(standAuraScanButton)
-standAuraScanButton.BackgroundColor3 = SUB
-standAuraScanButton.TextSize = 12
-standAuraScanButton.Text = "Scan ReplicatedStorage.Stands"
-standAuraScanButton.Parent = standAuraMod.holder:FindFirstChildWhichIsA("Frame") or standAuraMod.holder
--- Place the action inside the module's settings container, locating the frame with a plus marker.
-for _, child in ipairs(standAuraMod.holder:GetChildren()) do
-    if child:IsA("Frame") and child ~= standAuraMod.panel then
-        if child:FindFirstChildWhichIsA("UIListLayout") then
-            if child.Visible == false then
-                standAuraScanButton.Parent = child
-                break
-            end
-        end
-    end
-end
+-- Stand FX assets are discovered automatically during startup. Keep only a
+-- passive status label here; no manual scan control is exposed.
+local standAuraSettings = standAuraCycle.button.Parent
 standAuraScanStatus = Instance.new("TextLabel")
-standAuraScanStatus.Size = UDim2.new(1, 0, 0, 38)
+standAuraScanStatus.Name = "StandAuraStartupStatus"
+standAuraScanStatus.Size = UDim2.new(1, 0, 0, 34)
 standAuraScanStatus.BackgroundTransparency = 1
 standAuraScanStatus.Font = FONT
-standAuraScanStatus.TextSize = 11
+standAuraScanStatus.TextSize = 10
 standAuraScanStatus.TextWrapped = true
 standAuraScanStatus.TextXAlignment = Enum.TextXAlignment.Left
 standAuraScanStatus.TextYAlignment = Enum.TextYAlignment.Center
 standAuraScanStatus.TextColor3 = DIM
-standAuraScanStatus.Text = "Scans Stand/skin FX stored in ReplicatedStorage.Stands."
-standAuraScanStatus.Parent = standAuraScanButton.Parent
-standAuraScanButton.LayoutOrder = 97
-standAuraScanStatus.LayoutOrder = 98
-standAuraScanButton.MouseButton1Click:Connect(function()
-    local count = scanStandAuraSources()
-    if count > 0 then
-        standAuraScanStatus.Text = "Found " .. tostring(count) .. " source(s) in the Stand FX scan. Choose one, then enable the module."
-    end
-end)
+standAuraScanStatus.Text = "Stand and skin effects load automatically when TrueSight starts."
+standAuraScanStatus.Parent = standAuraSettings
+standAuraScanStatus.LayoutOrder = 97
 
 local verityMod = addModule(visualPanel, "Verity Pet", function(on)
     if on then verity.add() else verity.remove() end
@@ -2783,6 +3764,1421 @@ visualModules.standAura = standAuraMod
 visualModules.trails = trailMod
 visualModules.jump = jumpMod
 visualModules.ghost = ghostMod
+visualModules.panel = visualPanel
+end)()
+
+------------------------------------------------------------------
+-- Extra lightweight cosmetic modules (local/client visuals only)
+------------------------------------------------------------------
+;(function()
+    local visualPanel = visualModules.panel
+    if not visualPanel then return end
+
+    ------------------------------------------------------------------
+    -- ReplicatedStorage YBA cosmetics / accessory picker
+    ------------------------------------------------------------------
+    local cosmeticCandidates = {}
+    local cosmeticNames = {"None"}
+    local selectedCosmeticIndex = 1
+    local activeCosmetic
+    local cosmeticStatus
+    local cosmeticHatMod
+    local cosmeticOffsetX, cosmeticOffsetY, cosmeticOffsetZ = 0, 0, 0
+    local cosmeticRotationY = 0
+    local blackFlashAssets = {}
+    local blackFlashNames = {"Auto-detect"}
+    local blackFlashCycle
+    local blackFlashSelectedIndex = 1
+    local blackFlashStatus
+    local blackFlashMod
+    local blackFlashAnimationConnection
+    local blackFlashRespawnConnection
+    local blackFlashActiveObjects = {_state = {recentAttackAt = 0, durationFactor = 1.6, effectScale = 0.58}}
+    local blackFlashChance = 100
+    local blackFlashVolume = 0.8
+    local blackFlashCooldown = 1.2
+    local blackFlashLastTrigger = 0
+    local blackFlashParticleCount = 42
+
+    local function lower(value)
+        return string.lower(tostring(value or ""))
+    end
+
+    local function hasHatWord(name)
+        local n = lower(name)
+        return string.find(n, "hat", 1, true) ~= nil
+            or string.find(n, "helmet", 1, true) ~= nil
+            or string.find(n, "headwear", 1, true) ~= nil
+            or string.find(n, "accessory", 1, true) ~= nil
+            or string.find(n, "cosmetic", 1, true) ~= nil
+            or string.find(n, "mask", 1, true) ~= nil
+            or string.find(n, "glasses", 1, true) ~= nil
+            or string.find(n, "crown", 1, true) ~= nil
+    end
+
+    local function pathHasCosmeticFolder(inst)
+        local node = inst.Parent
+        while node and node ~= ReplicatedStorage do
+            local n = lower(node.Name)
+            if string.find(n, "cosmetic", 1, true)
+                or string.find(n, "accessor", 1, true)
+                or string.find(n, "headwear", 1, true)
+                or string.find(n, "hats", 1, true) then
+                return true
+            end
+            node = node.Parent
+        end
+        return false
+    end
+
+    local function hasBasePart(root)
+        if root:IsA("BasePart") then return true end
+        for _, child in ipairs(root:GetDescendants()) do
+            if child:IsA("BasePart") then return true end
+        end
+        return false
+    end
+
+    local function hasNestedAccessory(model)
+        -- A direct-child check avoids repeatedly scanning large nested cosmetic trees.
+        for _, child in ipairs(model:GetChildren()) do
+            if child:IsA("Accessory") then return true end
+        end
+        return false
+    end
+
+    local function getInstancePath(inst)
+        local parts = {}
+        local node = inst
+        while node and node ~= ReplicatedStorage do
+            table.insert(parts, 1, tostring(node.Name))
+            node = node.Parent
+        end
+        return table.concat(parts, "/")
+    end
+
+    local function scanReplicatedCosmetics()
+        table.clear(cosmeticCandidates)
+        table.clear(cosmeticNames)
+        table.clear(blackFlashAssets)
+        table.clear(blackFlashNames)
+        table.insert(cosmeticNames, "None")
+        table.insert(blackFlashNames, "Auto-detect")
+        local ok, descendants = pcall(function() return ReplicatedStorage:GetDescendants() end)
+        if not ok or type(descendants) ~= "table" then
+            if cosmeticStatus then cosmeticStatus.Text = "Could not discover assets in ReplicatedStorage during startup." end
+            return 0
+        end
+
+        local seen = {}
+        local blackFlashSeen = {}
+        for scanIndex, inst in ipairs(descendants) do
+            -- Yield periodically so large asset folders can't hitch menu startup.
+            if scanIndex % 450 == 0 then task.wait() end
+
+            -- Detect Black Flash source folders/effects during the same pass as
+            -- the cosmetic scan, avoiding a second expensive full-tree traversal.
+            local norm = lower(inst.Name):gsub("[^%w]", "")
+            if string.find(norm, "blackflash", 1, true) then
+                local root = inst
+                local ancestor = inst.Parent
+                while ancestor and ancestor ~= ReplicatedStorage do
+                    local ancestorName = lower(ancestor.Name):gsub("[^%w]", "")
+                    if string.find(ancestorName, "blackflash", 1, true) then root = ancestor end
+                    ancestor = ancestor.Parent
+                end
+                if root and not blackFlashSeen[root] then
+                    blackFlashSeen[root] = true
+                    local path = getInstancePath(root)
+                    local label = tostring(root.Name) .. "  •  " .. path
+                    if #label > 64 then label = string.sub(label, 1, 61) .. "..." end
+                    table.insert(blackFlashAssets, {source = root, path = path, label = label})
+                end
+            end
+
+            local candidate = false
+            if inst:IsA("Accessory") then
+                -- Accessory instances are exact wearables and are preferred.
+                candidate = hasBasePart(inst)
+            elseif inst:IsA("Model") then
+                -- Filter by name/path before traversing descendants. Scanning every
+                -- model's full subtree made ReplicatedStorage scans unnecessarily expensive.
+                local n = lower(inst.Name)
+                local containerName = n == "cosmetic" or n == "cosmetics" or n == "hat"
+                    or n == "hats" or n == "accessory" or n == "accessories"
+                    or n == "headwear" or n == "cosmeticassets"
+                candidate = not containerName and (hasHatWord(inst.Name) or pathHasCosmeticFolder(inst))
+                if candidate then
+                    local childModel = false
+                    for _, child in ipairs(inst:GetChildren()) do
+                        if child:IsA("Model") or child:IsA("Accessory") then childModel = true break end
+                    end
+                    if childModel and not hasHatWord(inst.Name) then candidate = false end
+                    if candidate then candidate = hasBasePart(inst) and not hasNestedAccessory(inst) end
+                end
+            end
+            if candidate and not seen[inst] and #cosmeticCandidates < 120 then
+                seen[inst] = true
+                local path = getInstancePath(inst)
+                local label = inst.Name
+                if #label > 32 then label = string.sub(label, 1, 29) .. "..." end
+                table.insert(cosmeticCandidates, {source = inst, path = path, label = label})
+            end
+        end
+        table.sort(cosmeticCandidates, function(a, b)
+            local an, bn = lower(a.label), lower(b.label)
+            if an == bn then return a.path < b.path end
+            return an < bn
+        end)
+        for _, item in ipairs(cosmeticCandidates) do
+            local display = item.label
+            if cosmeticNames[1] == display then display = display .. " " end
+            table.insert(cosmeticNames, display)
+        end
+        table.sort(blackFlashAssets, function(a, b)
+            local an, bn = lower(a.label), lower(b.label)
+            if an == bn then return a.path < b.path end
+            return an < bn
+        end)
+        for _, item in ipairs(blackFlashAssets) do table.insert(blackFlashNames, item.label) end
+        -- Preload a bounded set of Black Flash sounds in the background so impact audio
+        -- starts closer to the visual burst instead of waiting for first-use asset streaming.
+        task.spawn(function()
+            local preloadItems, seenSounds = {}, {}
+            for _, item in ipairs(blackFlashAssets) do
+                local okSounds, soundDescendants = pcall(function() return item.source:GetDescendants() end)
+                if okSounds then
+                    for _, soundObj in ipairs(soundDescendants) do
+                        if soundObj:IsA("Sound") and soundObj.SoundId ~= "" and not seenSounds[soundObj] then
+                            seenSounds[soundObj] = true
+                            table.insert(preloadItems, soundObj)
+                            if #preloadItems >= 60 then break end
+                        end
+                    end
+                end
+                if #preloadItems >= 60 then break end
+            end
+            if #preloadItems > 0 then
+                pcall(function() game:GetService("ContentProvider"):PreloadAsync(preloadItems) end)
+            end
+        end)
+        if blackFlashCycle then blackFlashCycle.set(1); blackFlashSelectedIndex = 1 end
+        if blackFlashStatus then
+            blackFlashStatus.Text = string.format("Found %d named Black Flash asset group(s) in ReplicatedStorage.", #blackFlashAssets)
+        end
+        if cosmeticStatus then
+            cosmeticStatus.Text = string.format("Found %d possible YBA cosmetics and %d Black Flash source(s) under ReplicatedStorage. Changes are local-only.", #cosmeticCandidates, #blackFlashAssets)
+        end
+        return #cosmeticCandidates
+    end
+
+    local function removeActiveCosmetic()
+        if activeCosmetic then
+            pcall(function() activeCosmetic:Destroy() end)
+        end
+        activeCosmetic = nil
+    end
+
+    local function cloneArchivable(source)
+        local all = {source}
+        local ok, desc = pcall(function() return source:GetDescendants() end)
+        if ok then
+            for _, child in ipairs(desc) do table.insert(all, child) end
+        end
+        local old = {}
+        for _, obj in ipairs(all) do
+            old[obj] = obj.Archivable
+            pcall(function() obj.Archivable = true end)
+        end
+        local cloneOk, clone = pcall(function() return source:Clone() end)
+        for obj, value in pairs(old) do pcall(function() obj.Archivable = value end) end
+        if cloneOk then return clone end
+        return nil
+    end
+
+    local function buildCosmeticOffset()
+        return CFrame.new(cosmeticOffsetX, cosmeticOffsetY, cosmeticOffsetZ)
+            * CFrame.Angles(0, math.rad(cosmeticRotationY), 0)
+    end
+
+    local function cosmeticPlacementCFrame(clone, head, label)
+        local lowerLabel = lower(label)
+        local boundsCF, boundsSize
+        if clone:IsA("Model") then
+            local ok, cf, size = pcall(function() local c, sz = clone:GetBoundingBox(); return c, sz end)
+            if ok then boundsCF, boundsSize = cf, size end
+        elseif clone:IsA("BasePart") then
+            boundsCF, boundsSize = clone.CFrame, clone.Size
+        else
+            local handle = clone:FindFirstChild("Handle")
+            local firstPart = (handle and handle:IsA("BasePart")) and handle or clone:FindFirstChildWhichIsA("BasePart", true)
+            if firstPart then boundsCF, boundsSize = firstPart.CFrame, firstPart.Size end
+        end
+        boundsCF = boundsCF or CFrame.new()
+        boundsSize = boundsSize or Vector3.new(0.8, 0.5, 0.3)
+
+        local localTarget
+        if string.find(lowerLabel, "glass", 1, true) or string.find(lowerLabel, "spectacle", 1, true)
+            or string.find(lowerLabel, "mask", 1, true) or string.find(lowerLabel, "visor", 1, true)
+            or string.find(lowerLabel, "face", 1, true) then
+            -- Roblox faces forward along the head's local -Z axis.
+            localTarget = CFrame.new(0, 0.05, -(head.Size.Z * 0.5 + boundsSize.Z * 0.5 - 0.03))
+        elseif string.find(lowerLabel, "hat", 1, true) or string.find(lowerLabel, "crown", 1, true)
+            or string.find(lowerLabel, "helmet", 1, true) or string.find(lowerLabel, "headwear", 1, true) then
+            localTarget = CFrame.new(0, head.Size.Y * 0.5 + boundsSize.Y * 0.5 - 0.06, 0)
+        else
+            -- Unknown YBA names default to the top/centre of the head, not the
+            -- previous fixed +0.6 offset which placed many cosmetics too high.
+            localTarget = CFrame.new(0, head.Size.Y * 0.5 + boundsSize.Y * 0.35, 0)
+        end
+        local desiredGeometryCF = head.CFrame * localTarget * buildCosmeticOffset()
+        local delta = desiredGeometryCF * boundsCF:Inverse()
+        return delta
+    end
+
+    local function applyModelCosmetic(clone, character, label)
+        local head = character:FindFirstChild("Head")
+        if not head then clone:Destroy(); return false, "Character head not found" end
+        local parts = {}
+        for _, obj in ipairs(clone:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                obj.Anchored = true
+                obj.CanCollide = false
+                obj.CanTouch = false
+                obj.CanQuery = false
+                obj.Massless = true
+                obj.CastShadow = false
+                table.insert(parts, obj)
+            elseif obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript")
+                or obj:IsA("Constraint") or obj:IsA("JointInstance") then
+                pcall(function() obj:Destroy() end)
+            end
+        end
+        if clone:IsA("BasePart") then table.insert(parts, clone) end
+        if #parts == 0 then clone:Destroy(); return false, "Cosmetic has no 3D parts" end
+
+        -- Compute a transform from the asset's actual bounding-box centre to a
+        -- head/face/top anchor, then apply the user's manual fine-alignment offsets.
+        local delta = cosmeticPlacementCFrame(clone, head, label or clone.Name)
+        if clone:IsA("Model") then
+            pcall(function() clone:PivotTo(delta * clone:GetPivot()) end)
+        else
+            -- Accessory/Folder-like containers don't expose PivotTo or CFrame.
+            for _, part in ipairs(parts) do
+                if part and part.Parent then part.CFrame = delta * part.CFrame end
+            end
+        end
+        clone.Parent = character
+        for _, part in ipairs(parts) do
+            local weld = Instance.new("WeldConstraint")
+            weld.Name = "TrueSightCosmeticWeld"
+            weld.Part0 = head
+            weld.Part1 = part
+            weld.Parent = part
+        end
+        for _, part in ipairs(parts) do if part and part.Parent then part.Anchored = false end end
+        return true
+    end
+
+    local function findMatchingCosmeticAttachment(character, handle)
+        if not handle then return nil, nil end
+        local handleAttachments = {}
+        for _, obj in ipairs(handle:GetDescendants()) do
+            if obj:IsA("Attachment") then table.insert(handleAttachments, obj) end
+        end
+        local head = character:FindFirstChild("Head")
+        for _, handleAttachment in ipairs(handleAttachments) do
+            if head then
+                local headAttachment = head:FindFirstChild(handleAttachment.Name)
+                if headAttachment and headAttachment:IsA("Attachment") then
+                    return headAttachment, handleAttachment
+                end
+            end
+            for _, host in ipairs(character:GetDescendants()) do
+                if host:IsA("Attachment") and host.Name == handleAttachment.Name
+                    and host.Parent and host.Parent:IsA("BasePart") then
+                    return host, handleAttachment
+                end
+            end
+        end
+        return nil, nil
+    end
+
+    local function applySelectedCosmetic(character)
+        removeActiveCosmetic()
+        if not cosmeticHatMod or not cosmeticHatMod.enabled then return end
+        character = character or player.Character
+        if not character then
+            if cosmeticStatus then cosmeticStatus.Text = "Waiting for your character..." end
+            return
+        end
+        if selectedCosmeticIndex <= 1 then
+            if cosmeticStatus then cosmeticStatus.Text = "No cosmetic selected." end
+            return
+        end
+        local record = cosmeticCandidates[selectedCosmeticIndex - 1]
+        if not record or not record.source or not record.source.Parent then
+            if cosmeticStatus then cosmeticStatus.Text = "Selected asset is no longer available. Restart TrueSight to refresh assets." end
+            return
+        end
+        local clone = cloneArchivable(record.source)
+        if not clone then
+            if cosmeticStatus then cosmeticStatus.Text = "Could not clone the selected asset." end
+            return
+        end
+        local ok, err
+        if clone:IsA("Accessory") then
+            local handle = clone:FindFirstChild("Handle")
+            local hostAttachment, handleAttachment = findMatchingCosmeticAttachment(character, handle)
+            if handle and handle:IsA("BasePart") and hostAttachment and handleAttachment then
+                -- Match the wearable's authored attachment (HatAttachment,
+                -- FaceFrontAttachment, etc.) instead of guessing a fixed height.
+                for _, obj in ipairs(clone:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        obj.Anchored = false
+                        obj.CanCollide = false
+                        obj.CanTouch = false
+                        obj.CanQuery = false
+                        obj.Massless = true
+                        obj.CastShadow = false
+                    elseif obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                        pcall(function() obj:Destroy() end)
+                    end
+                end
+                clone.Parent = character
+                local weld = Instance.new("Weld")
+                weld.Name = "TrueSightCosmeticAttachmentWeld"
+                weld.Part0 = hostAttachment.Parent
+                weld.Part1 = handle
+                weld.C0 = hostAttachment.CFrame * buildCosmeticOffset()
+                weld.C1 = handleAttachment.CFrame
+                weld.Parent = handle
+                ok = true
+            else
+                -- Some YBA assets are custom Models disguised as Accessory instances
+                -- and have no standard Attachment pair. Use a name-aware head/face fit.
+                ok, err = applyModelCosmetic(clone, character, record.label)
+            end
+        else
+            ok, err = applyModelCosmetic(clone, character, record.label)
+        end
+        if ok then
+            activeCosmetic = clone
+            if cosmeticStatus then cosmeticStatus.Text = "Equipped locally: " .. record.path end
+        else
+            if cosmeticStatus then cosmeticStatus.Text = tostring(err or "Could not attach cosmetic") end
+        end
+    end
+
+    local cosmeticScanBusy = false
+    cosmeticHatMod = addModule(visualPanel, "YBA Cosmetic Hat", function(on)
+        if on then applySelectedCosmetic(player.Character) else removeActiveCosmetic() end
+    end)
+    local cosmeticCycle = cosmeticHatMod.cycle("Cosmetic", cosmeticNames, 1, function(i)
+        selectedCosmeticIndex = i
+        if cosmeticHatMod.enabled then applySelectedCosmetic(player.Character) end
+    end)
+    cosmeticCycle.button.LayoutOrder = 0
+    cosmeticHatMod.slider("Offset X", -1.5, 1.5, 0, 0.05, function(v)
+        cosmeticOffsetX = v
+        if cosmeticHatMod.enabled then applySelectedCosmetic(player.Character) end
+    end)
+    cosmeticHatMod.slider("Offset Y", -1.5, 1.5, 0, 0.05, function(v)
+        cosmeticOffsetY = v
+        if cosmeticHatMod.enabled then applySelectedCosmetic(player.Character) end
+    end)
+    cosmeticHatMod.slider("Offset Z", -1.5, 1.5, 0, 0.05, function(v)
+        cosmeticOffsetZ = v
+        if cosmeticHatMod.enabled then applySelectedCosmetic(player.Character) end
+    end)
+    cosmeticHatMod.slider("Rotation Y", -180, 180, 0, 5, function(v)
+        cosmeticRotationY = v
+        if cosmeticHatMod.enabled then applySelectedCosmetic(player.Character) end
+    end)
+    local settingsPanel = cosmeticCycle.button.Parent
+    cosmeticStatus = Instance.new("TextLabel")
+    cosmeticStatus.LayoutOrder = 51
+    cosmeticStatus.Size = UDim2.new(1, 0, 0, 38)
+    cosmeticStatus.BackgroundTransparency = 1
+    cosmeticStatus.Font = FONT
+    cosmeticStatus.TextSize = 10
+    cosmeticStatus.TextColor3 = DIM
+    cosmeticStatus.TextWrapped = true
+    cosmeticStatus.TextXAlignment = Enum.TextXAlignment.Left
+    cosmeticStatus.Text = "YBA cosmetics and Black Flash assets load automatically at startup..."
+    cosmeticStatus.Parent = settingsPanel
+
+    ------------------------------------------------------------------
+    -- Neon Halo: two bead-rings. Individual spherical segments create a
+    -- clearly open centre rather than a disk-like stack of overlapping bars.
+    ------------------------------------------------------------------
+    local haloParts = {}
+    local haloSegmentRecords = {}
+    local haloHead
+    local haloSize = 2.35
+    local function removeHalo()
+        for _, obj in ipairs(haloParts) do if obj and obj.Parent then obj:Destroy() end end
+        table.clear(haloParts)
+        table.clear(haloSegmentRecords)
+        haloHead = nil
+    end
+    local function updateHaloGeometry()
+        if not haloHead or not haloHead.Parent then return end
+        for _, rec in ipairs(haloSegmentRecords) do
+            local radius = haloSize * rec.radiusFactor
+            local angle = rec.angle
+            local localCF = CFrame.new(math.cos(angle) * radius, rec.y, math.sin(angle) * radius)
+            rec.part.Size = Vector3.new(rec.dotSize, rec.dotSize, rec.dotSize)
+            rec.part.CFrame = haloHead.CFrame * localCF
+            rec.weld.C0 = localCF
+        end
+    end
+    local function addHalo(character)
+        removeHalo()
+        character = character or player.Character
+        local head = character and character:FindFirstChild("Head")
+        if not head then return end
+        haloHead = head
+        local specs = {
+            -- The radius is large compared with the bead size, keeping the centre visibly hollow.
+            {radiusFactor = 0.68, y = head.Size.Y * 0.64, alpha = 0.04, dotSize = 0.16, count = 64},
+            {radiusFactor = 0.49, y = head.Size.Y * 0.59, alpha = 0.48, dotSize = 0.105, count = 48},
+        }
+        for _, spec in ipairs(specs) do
+            for index = 1, spec.count do
+                local angle = (index - 1) * (math.pi * 2 / spec.count)
+                local part = Instance.new("Part")
+                part.Name = "TrueSightHaloBead"
+                part.Shape = Enum.PartType.Ball
+                part.Size = Vector3.new(spec.dotSize, spec.dotSize, spec.dotSize)
+                part.Material = Enum.Material.Neon
+                part.Color = accent
+                part.Transparency = spec.alpha
+                part.CanCollide = false
+                part.CanTouch = false
+                part.CanQuery = false
+                part.CastShadow = false
+                part.Massless = true
+                part.Anchored = false
+                local localCF = CFrame.new(math.cos(angle) * haloSize * spec.radiusFactor, spec.y, math.sin(angle) * haloSize * spec.radiusFactor)
+                part.CFrame = head.CFrame * localCF
+                local weld = Instance.new("Weld")
+                weld.Name = "TrueSightHaloWeld"
+                weld.Part0 = head
+                weld.Part1 = part
+                weld.C0 = localCF
+                weld.C1 = CFrame.new()
+                weld.Parent = part
+                part.Parent = character
+                table.insert(haloParts, part)
+                table.insert(haloSegmentRecords, {
+                    part = part, weld = weld, angle = angle, radiusFactor = spec.radiusFactor,
+                    y = spec.y, dotSize = spec.dotSize, segmentCount = spec.count,
+                })
+            end
+        end
+        updateHaloGeometry()
+    end
+    onAccent(function(c) for _, obj in ipairs(haloParts) do if obj and obj.Parent then obj.Color = c end end end)
+    local haloMod = addModule(visualPanel, "Neon Halo", function(on)
+        if on then addHalo(player.Character) else removeHalo() end
+    end)
+    haloMod.slider("Diameter", 1.4, 3.4, haloSize, 0.1, function(v)
+        haloSize = v
+        updateHaloGeometry()
+    end)
+    visualModules.halo = haloMod
+    visualModules.addHalo = addHalo
+    visualModules.removeHalo = removeHalo
+    ------------------------------------------------------------------
+    -- Black Flash: chance roll on nearby opponent damage shortly after our attack animation.
+    -- It reads VFX/audio source groups discovered during the shared startup scan.
+    ------------------------------------------------------------------
+    local function disconnectBlackFlashAnimation()
+        if blackFlashAnimationConnection then
+            if type(blackFlashAnimationConnection) == "table" then
+                for _, conn in ipairs(blackFlashAnimationConnection) do
+                    pcall(function() conn:Disconnect() end)
+                end
+            else
+                pcall(function() blackFlashAnimationConnection:Disconnect() end)
+            end
+            blackFlashAnimationConnection = nil
+        end
+    end
+    local function cleanupBlackFlashObjects()
+        for _, obj in ipairs(blackFlashActiveObjects) do
+            if obj and obj.Parent then pcall(function() obj:Destroy() end) end
+        end
+        local state = blackFlashActiveObjects._state or {recentAttackAt = 0, durationFactor = 1.6}
+        table.clear(blackFlashActiveObjects)
+        state.recentAttackAt = 0
+        blackFlashActiveObjects._state = state
+    end
+    local function retainBlackFlashObject(obj, lifetime)
+        table.insert(blackFlashActiveObjects, obj)
+        if lifetime then Debris:AddItem(obj, lifetime) end
+        return obj
+    end
+    local function blackFlashAnchor(character)
+        return character and (character:FindFirstChild("HumanoidRootPart")
+            or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+            or character:FindFirstChild("RightHand") or character:FindFirstChild("Right Arm")
+            or character:FindFirstChild("LeftHand") or character:FindFirstChild("Left Arm"))
+    end
+    local function blackFlashAttackerCharacter()
+        -- YBA commonly mirrors player avatars inside workspace.Living. Prefer that
+        -- live rig when it has a root, since it can be closer to the combat position
+        -- than Player.Character during a respawn/Stand transition.
+        local living = workspace:FindFirstChild("Living")
+        local liveCharacter = living and living:FindFirstChild(player.Name)
+        if liveCharacter and (liveCharacter:FindFirstChild("HumanoidRootPart")
+            or liveCharacter:FindFirstChild("UpperTorso") or liveCharacter:FindFirstChild("Torso")) then
+            return liveCharacter
+        end
+        return player.Character
+    end
+    local function blackFlashImpactCFrame(targetCharacter, anchor)
+        local targetRoot = targetCharacter and (targetCharacter:FindFirstChild("HumanoidRootPart")
+            or targetCharacter:FindFirstChild("UpperTorso") or targetCharacter:FindFirstChild("Torso"))
+        local ownCharacter = blackFlashAttackerCharacter()
+        local ownRoot = ownCharacter and (ownCharacter:FindFirstChild("HumanoidRootPart")
+            or ownCharacter:FindFirstChild("UpperTorso") or ownCharacter:FindFirstChild("Torso"))
+        if targetRoot and ownRoot and targetCharacter ~= ownCharacter then
+            local toAttacker = ownRoot.Position - targetRoot.Position
+            local flat = Vector3.new(toAttacker.X, 0, toAttacker.Z)
+            if flat.Magnitude > 0.05 then
+                -- Put the impact between the two characters and turn it toward the
+                -- attacker, independent of which direction the victim is facing.
+                -- Keep the burst close to the target's front/upper torso rather than
+                -- offsetting it more than a stud from the actual hit position.
+                local position = targetRoot.Position + flat.Unit * math.min(0.38, flat.Magnitude * 0.10)
+                    + Vector3.new(0, math.clamp(targetRoot.Size.Y * 0.12, 0.18, 0.38), 0)
+                return CFrame.lookAt(position, ownRoot.Position + Vector3.new(0, 0.35, 0))
+            end
+        end
+        local base = targetRoot or anchor
+        return base.CFrame * CFrame.new(0, 0.8, -0.45)
+    end
+    local function makeBlackFlashAttachment(anchor, worldCFrame)
+        local attachment = Instance.new("Attachment")
+        attachment.Name = "TrueSightBlackFlashAttachment"
+        attachment.CFrame = anchor.CFrame:ToObjectSpace(worldCFrame)
+        attachment.Parent = anchor
+        return attachment
+    end
+    local function cloneBlackFlashSource(character) 
+        local anchor = blackFlashAnchor(character)
+        if not anchor then
+            if blackFlashStatus then blackFlashStatus.Text = "No hand/root part found on the target character." end
+            return false
+        end
+        local impactCFrame = blackFlashImpactCFrame(character, anchor)
+        if #blackFlashAssets == 0 then
+            if blackFlashStatus then blackFlashStatus.Text = "No named Black Flash assets were found during startup discovery." end
+            return false
+        end
+        -- Dropdown index 1 means Auto-detect (first discovered group); named options
+        -- start at index 2 and map to the corresponding discovered group minus one.
+        local selectedIndex = tonumber(blackFlashSelectedIndex) or 1
+        local sourceIndex = selectedIndex <= 1 and 1 or (selectedIndex - 1)
+        sourceIndex = math.clamp(sourceIndex, 1, #blackFlashAssets)
+        local record = blackFlashAssets[sourceIndex]
+        if not record or not record.source or not record.source.Parent then
+            if blackFlashStatus then blackFlashStatus.Text = "Selected Black Flash asset is no longer available. Restart TrueSight to refresh assets." end
+            return false
+        end
+        -- Build one composite from the selected source plus whichever companion
+        -- capability is missing. YBA often stores Black Flash VFX and audio in separate
+        -- folders, so selecting either one should still play BOTH when both are available.
+        local selectedClone = cloneArchivable(record.source)
+        if not selectedClone then
+            if blackFlashStatus then blackFlashStatus.Text = "Could not clone " .. tostring(record.label) end
+            return false
+        end
+        local composite = Instance.new("Folder")
+        composite.Name = "TrueSightBlackFlashComposite"
+
+        -- Black Flash folders in ReplicatedStorage may contain large PointLights /
+        -- SurfaceLights used by the original in-game scene. Reusing them locally can
+        -- tint the whole arena red for several seconds. Keep the particles and audio,
+        -- but remove scene-lighting objects from every cloned source.
+        local function stripBlackFlashSceneLights(root)
+            if not root then return end
+            local items = {root}
+            for _, desc in ipairs(root:GetDescendants()) do
+                table.insert(items, desc)
+            end
+            for _, obj in ipairs(items) do
+                if obj and obj.Parent and (obj:IsA("PointLight") or obj:IsA("SpotLight")
+                    or obj:IsA("SurfaceLight") or obj:IsA("BloomEffect")
+                    or obj:IsA("ColorCorrectionEffect") or obj:IsA("BlurEffect")
+                    or obj:IsA("SunRaysEffect")) then
+                    pcall(function() obj:Destroy() end)
+                end
+            end
+        end
+        stripBlackFlashSceneLights(selectedClone)
+        selectedClone.Parent = composite
+
+        local function inspectCapabilities(root)
+            local hasSound, hasVisual = false, false
+            local function inspectOne(obj)
+                if obj:IsA("Sound") and obj.SoundId ~= "" then hasSound = true end
+                if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
+                    or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+                    hasVisual = true
+                end
+            end
+            inspectOne(root)
+            for _, obj in ipairs(root:GetDescendants()) do inspectOne(obj) end
+            return hasSound, hasVisual
+        end
+        local hasSound, hasVisual = inspectCapabilities(composite)
+        local companionVisual, companionSound
+        for _, candidate in ipairs(blackFlashAssets) do
+            if candidate.source and candidate.source.Parent and candidate.source ~= record.source then
+                local candidateSound, candidateVisual = inspectCapabilities(candidate.source)
+                if not hasVisual and not companionVisual and candidateVisual then companionVisual = candidate end
+                if not hasSound and not companionSound and candidateSound then companionSound = candidate end
+                if (hasVisual or companionVisual) and (hasSound or companionSound) then break end
+            end
+        end
+        if not hasVisual and companionVisual then
+            local extra = cloneArchivable(companionVisual.source)
+            if extra then
+                stripBlackFlashSceneLights(extra)
+                extra.Parent = composite
+                hasVisual = select(2, inspectCapabilities(extra))
+            end
+        end
+        -- Recheck after adding the visual companion, since that group may contain sound too.
+        hasSound = select(1, inspectCapabilities(composite))
+        if not hasSound and companionSound then
+            local extra = cloneArchivable(companionSound.source)
+            if extra then
+                stripBlackFlashSceneLights(extra)
+                extra.Parent = composite
+                hasSound = select(1, inspectCapabilities(extra))
+            end
+        end
+        local clone = composite
+
+        -- Remove executable logic but retain particles, geometry, attachments and sound.
+        stripBlackFlashSceneLights(clone)
+        for _, obj in ipairs(clone:GetDescendants()) do
+            if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                pcall(function() obj:Destroy() end)
+            end
+        end
+
+        if clone:IsA("Sound") then
+            local soundAttachment = makeBlackFlashAttachment(anchor, impactCFrame)
+            clone.Volume = blackFlashVolume
+            clone.Looped = false
+            clone.Parent = soundAttachment
+            pcall(function() clone.TimePosition = 0 end)
+            clone:Play()
+            retainBlackFlashObject(soundAttachment, math.max(3, clone.TimeLength + 0.5))
+            retainBlackFlashObject(clone, math.max(3, clone.TimeLength + 0.5))
+        elseif clone:IsA("ParticleEmitter") then
+            local attachment = makeBlackFlashAttachment(anchor, impactCFrame)
+            retainBlackFlashObject(attachment, 3 * (blackFlashActiveObjects._state.durationFactor or 1.6))
+            clone.Rate = 0
+            clone.Enabled = true
+            pcall(function()
+                local durationScale = blackFlashActiveObjects._state.durationFactor or 1.6
+                local life = clone.Lifetime
+                clone.Lifetime = NumberRange.new(life.Min * durationScale, life.Max * durationScale)
+                local sizeScale = blackFlashActiveObjects._state.effectScale or 0.58
+                local keys = clone.Size.Keypoints
+                local scaled = table.create(#keys)
+                for i, keypoint in ipairs(keys) do
+                    scaled[i] = NumberSequenceKeypoint.new(keypoint.Time, keypoint.Value * sizeScale, keypoint.Envelope * sizeScale)
+                end
+                clone.Size = NumberSequence.new(scaled)
+            end)
+            clone.Parent = attachment
+            pcall(function() clone:Emit(blackFlashParticleCount) end)
+            retainBlackFlashObject(clone, 2.8 * (blackFlashActiveObjects._state.durationFactor or 1.6))
+        elseif clone:IsA("Trail") or clone:IsA("Beam") then
+            -- Trail/Beam templates need two valid attachments. If source is a single
+            -- asset leaf without both, it cannot render on its own; report it safely.
+            local a0, a1 = clone.Attachment0, clone.Attachment1
+            if not a0 or not a1 then
+                clone:Destroy()
+                if blackFlashStatus then blackFlashStatus.Text = "The selected Trail/Beam needs its parent effect group; select the enclosing Black Flash folder." end
+                return false
+            end
+            local attachA = makeBlackFlashAttachment(anchor, impactCFrame * CFrame.new(-0.45, 0, 0))
+            local attachB = makeBlackFlashAttachment(anchor, impactCFrame * CFrame.new(0.45, 0, 0))
+            clone.Attachment0, clone.Attachment1 = attachA, attachB
+            clone.Enabled = true
+            pcall(function()
+                if clone:IsA("Trail") then
+                    clone.Lifetime = clone.Lifetime * (blackFlashActiveObjects._state.durationFactor or 1.6)
+                end
+            end)
+            clone.Parent = anchor
+            local trailHold = 1.8 * (blackFlashActiveObjects._state.durationFactor or 1.6)
+            retainBlackFlashObject(attachA, trailHold); retainBlackFlashObject(attachB, trailHold); retainBlackFlashObject(clone, trailHold)
+        else
+            local wrapper
+            local sourceIsModel = clone:IsA("Model")
+            if sourceIsModel then
+                wrapper = clone
+            elseif clone:IsA("Folder") then
+                wrapper = Instance.new("Model")
+                wrapper.Name = "TrueSightBlackFlashFX"
+                for _, child in ipairs(clone:GetChildren()) do child.Parent = wrapper end
+                clone:Destroy()
+            elseif clone:IsA("BasePart") then
+                wrapper = Instance.new("Model")
+                wrapper.Name = "TrueSightBlackFlashFX"
+                clone.Parent = wrapper
+            else
+                -- Unknown container types still get useful local VFX by mounting
+                -- descendant ParticleEmitters and Sounds to an attachment/hand.
+                wrapper = Instance.new("Model")
+                wrapper.Name = "TrueSightBlackFlashFX"
+                clone.Parent = wrapper
+            end
+
+            local parts = {}
+            for _, obj in ipairs(wrapper:GetDescendants()) do
+                if obj:IsA("BasePart") then
+                    obj.Anchored = true
+                    obj.CanCollide = false
+                    obj.CanTouch = false
+                    obj.CanQuery = false
+                    obj.CastShadow = false
+                    -- Many stored Black Flash templates include bright placeholder shards.
+                    -- Keep them invisible and use the template's real emitters for the burst.
+                    obj.Transparency = 1
+                    table.insert(parts, obj)
+                end
+            end
+            if #parts > 0 then
+                wrapper.Parent = workspace
+                pcall(function()
+                    -- Scale oversized source geometry before aligning its actual bounds.
+                    wrapper:ScaleTo(blackFlashActiveObjects._state.effectScale or 0.58)
+                end)
+                pcall(function()
+                    -- Stored effect models sometimes have a pivot far from their visible geometry.
+                    -- Align their bounds to the impact point rather than trusting that pivot.
+                    local boundsCFrame = wrapper:GetBoundingBox()
+                    local currentPivot = wrapper:GetPivot()
+                    local worldTransform = impactCFrame * boundsCFrame:Inverse()
+                    wrapper:PivotTo(worldTransform * currentPivot)
+                end)
+                -- Start audio first; then emit the burst in the same event callback to
+                -- minimise the perceived gap between the Black Flash sound and VFX.
+                for _, obj in ipairs(wrapper:GetDescendants()) do
+                    if obj:IsA("Sound") then
+                        obj.Volume = blackFlashVolume
+                        obj.Looped = false
+                        -- Standalone Sound objects parented under Model/Folder containers
+                        -- may not get reliable spatial playback; attach them to the hit anchor.
+                        if not obj.Parent or not (obj.Parent:IsA("BasePart") or obj.Parent:IsA("Attachment")) then
+                            local soundAttachment = makeBlackFlashAttachment(anchor, impactCFrame)
+                            obj.Parent = soundAttachment
+                            retainBlackFlashObject(soundAttachment, math.max(3, obj.TimeLength + 0.5))
+                        end
+                        -- Startup discovery preloads source sounds; don't wait on Loaded here,
+                        -- because waiting at hit-time makes audio lag behind the VFX burst.
+                        pcall(function() obj.TimePosition = 0 end)
+                        pcall(function() obj:Play() end)
+                        retainBlackFlashObject(obj, math.max(4, obj.TimeLength + 1))
+                    end
+                end
+                local fallbackEmitterAttachment
+                for _, obj in ipairs(wrapper:GetDescendants()) do
+                    if obj:IsA("ParticleEmitter") then
+                        obj.Enabled = true
+                        local parent = obj.Parent
+                        -- Root-level emitters stored directly under a Model/Folder do not
+                        -- have a valid emission point. Mount those at the computed impact.
+                        if not parent or (not parent:IsA("Attachment") and not parent:IsA("BasePart")) then
+                            if not fallbackEmitterAttachment then
+                                fallbackEmitterAttachment = makeBlackFlashAttachment(anchor, impactCFrame)
+                                retainBlackFlashObject(fallbackEmitterAttachment, 3.8 * (blackFlashActiveObjects._state.durationFactor or 1.6))
+                            end
+                            obj.Parent = fallbackEmitterAttachment
+                            parent = fallbackEmitterAttachment
+                        end
+                        obj.Rate = 0
+                        pcall(function()
+                            local durationScale = blackFlashActiveObjects._state.durationFactor or 1.6
+                            local life = obj.Lifetime
+                            obj.Lifetime = NumberRange.new(life.Min * durationScale, life.Max * durationScale)
+                            local sizeScale = blackFlashActiveObjects._state.effectScale or 0.58
+                            local keys = obj.Size.Keypoints
+                            local scaled = table.create(#keys)
+                            for i, keypoint in ipairs(keys) do
+                                scaled[i] = NumberSequenceKeypoint.new(keypoint.Time, keypoint.Value * sizeScale, keypoint.Envelope * sizeScale)
+                            end
+                            obj.Size = NumberSequence.new(scaled)
+                            obj:Emit(blackFlashParticleCount)
+                        end)
+                    end
+                end
+                retainBlackFlashObject(wrapper, 4 * (blackFlashActiveObjects._state.durationFactor or 1.6))
+            else
+                local attachment = makeBlackFlashAttachment(anchor, impactCFrame)
+                retainBlackFlashObject(attachment, 4 * (blackFlashActiveObjects._state.durationFactor or 1.6))
+                local descendants = wrapper:GetDescendants()
+                -- Reparent/play sounds before particle emission for tighter sync.
+                for _, obj in ipairs(descendants) do
+                    if obj:IsA("Sound") then
+                        obj.Volume = blackFlashVolume
+                        obj.Looped = false
+                        local soundAttachment = makeBlackFlashAttachment(anchor, impactCFrame)
+                        obj.Parent = soundAttachment
+                        retainBlackFlashObject(soundAttachment, math.max(3, obj.TimeLength + 0.5))
+                        -- Startup discovery preloads source sounds; don't wait on Loaded here,
+                        -- because waiting at hit-time makes audio lag behind the VFX burst.
+                        pcall(function() obj.TimePosition = 0 end)
+                        pcall(function() obj:Play() end)
+                        retainBlackFlashObject(obj, math.max(4, obj.TimeLength + 1))
+                    end
+                end
+                for _, obj in ipairs(descendants) do
+                    if obj:IsA("ParticleEmitter") then
+                        obj.Rate = 0
+                        obj.Enabled = true
+                        pcall(function()
+                            local durationScale = blackFlashActiveObjects._state.durationFactor or 1.6
+                            local life = obj.Lifetime
+                            obj.Lifetime = NumberRange.new(life.Min * durationScale, life.Max * durationScale)
+                            local sizeScale = blackFlashActiveObjects._state.effectScale or 0.58
+                            local keys = obj.Size.Keypoints
+                            local scaled = table.create(#keys)
+                            for i, keypoint in ipairs(keys) do
+                                scaled[i] = NumberSequenceKeypoint.new(keypoint.Time, keypoint.Value * sizeScale, keypoint.Envelope * sizeScale)
+                            end
+                            obj.Size = NumberSequence.new(scaled)
+                        end)
+                        obj.Parent = attachment
+                        pcall(function() obj:Emit(blackFlashParticleCount) end)
+                        retainBlackFlashObject(obj, 3.8 * (blackFlashActiveObjects._state.durationFactor or 1.6))
+                    end
+                end
+                wrapper:Destroy()
+            end
+        end
+        if blackFlashStatus then blackFlashStatus.Text = "Played local Black Flash FX at impact: " .. tostring(record.path) end
+        return true
+    end
+    local function attachBlackFlashCharacter(character)
+        disconnectBlackFlashAnimation()
+        character = character or player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not character or not humanoid then return end
+        blackFlashAnimationConnection = {}
+        local function recordAttackTrack(track)
+            if not blackFlashMod or not blackFlashMod.enabled or not track then return end
+            -- Animation tracks are a backup signal only. Require Action priority here;
+            -- mouse/skill-key input handles attack timing when YBA doesn't expose tracks.
+            -- Ordinary walking/idle animations must not make unrelated damage count.
+            local priority = track.Priority
+            if not priority or priority.Value < Enum.AnimationPriority.Action.Value then return end
+            blackFlashActiveObjects._state.recentAttackAt = os.clock()
+        end
+        local function hookAnimationSignal(signal)
+            table.insert(blackFlashAnimationConnection, signal:Connect(recordAttackTrack))
+        end
+        local seenAnimators = {}
+        local function hookAnimator(obj)
+            if obj and obj:IsA("Animator") and not seenAnimators[obj] then
+                seenAnimators[obj] = true
+                hookAnimationSignal(obj.AnimationPlayed)
+            end
+        end
+        hookAnimationSignal(humanoid.AnimationPlayed)
+        for _, obj in ipairs(character:GetDescendants()) do
+            if obj:IsA("Animator") then hookAnimator(obj) end
+        end
+        table.insert(blackFlashAnimationConnection, character.DescendantAdded:Connect(function(obj)
+            if obj:IsA("Animator") then hookAnimator(obj) end
+        end))
+        -- YBA can play Stand attack tracks on a model under workspace.Living rather
+        -- than on the player's Humanoid. Watch that local player's live rig too.
+        local living = workspace:FindFirstChild("Living")
+        local liveCharacter = living and living:FindFirstChild(player.Name)
+        if liveCharacter and liveCharacter ~= character then
+            for _, obj in ipairs(liveCharacter:GetDescendants()) do
+                if obj:IsA("Animator") then hookAnimator(obj) end
+            end
+            table.insert(blackFlashAnimationConnection, liveCharacter.DescendantAdded:Connect(function(obj)
+                if obj:IsA("Animator") then hookAnimator(obj) end
+            end))
+        end
+    end
+    local function stopBlackFlash()
+        disconnectBlackFlashAnimation()
+        if blackFlashRespawnConnection then
+            if type(blackFlashRespawnConnection) == "table" then
+                for _, conn in ipairs(blackFlashRespawnConnection) do
+                    pcall(function() conn:Disconnect() end)
+                end
+            else
+                pcall(function() blackFlashRespawnConnection:Disconnect() end)
+            end
+            blackFlashRespawnConnection = nil
+        end
+        blackFlashActiveObjects._state.recentAttackAt = 0
+        cleanupBlackFlashObjects()
+    end
+    blackFlashMod = addModule(visualPanel, "Black Flash VFX + Sound", function(on)
+        stopBlackFlash()
+        if not on then return end
+        blackFlashRespawnConnection = {}
+        local function keepConnection(connection)
+            table.insert(blackFlashRespawnConnection, connection)
+            return connection
+        end
+        keepConnection(player.CharacterAdded:Connect(function(character)
+            task.delay(0.45, function()
+                if blackFlashMod and blackFlashMod.enabled then attachBlackFlashCharacter(character) end
+            end)
+        end))
+        -- Input timestamps are a fallback for YBA combat/Stand moves whose tracks
+        -- are not exposed through the local Humanoid's AnimationPlayed signal.
+        -- The effect still only fires when another player's health actually drops.
+        keepConnection(UserInputService.InputBegan:Connect(function(input)
+            if not blackFlashMod or not blackFlashMod.enabled then return end
+            if UserInputService:GetFocusedTextBox() then return end
+            local isAttackInput = input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.MouseButton2
+            if input.UserInputType == Enum.UserInputType.Keyboard then
+                local key = input.KeyCode
+                -- Include common YBA moves and hotbar inputs (1-9), plus Q for games that bind it.
+                isAttackInput = key == Enum.KeyCode.Q or key == Enum.KeyCode.E or key == Enum.KeyCode.R
+                    or key == Enum.KeyCode.T or key == Enum.KeyCode.Y or key == Enum.KeyCode.F
+                    or key == Enum.KeyCode.G or key == Enum.KeyCode.H or key == Enum.KeyCode.Z
+                    or key == Enum.KeyCode.X or key == Enum.KeyCode.C or key == Enum.KeyCode.V
+                    or key == Enum.KeyCode.B or key == Enum.KeyCode.One or key == Enum.KeyCode.Two
+                    or key == Enum.KeyCode.Three or key == Enum.KeyCode.Four or key == Enum.KeyCode.Five
+                    or key == Enum.KeyCode.Six or key == Enum.KeyCode.Seven or key == Enum.KeyCode.Eight
+                    or key == Enum.KeyCode.Nine
+            end
+            if isAttackInput then
+                -- Some YBA combat inputs are marked processed. The effect still requires
+                -- actual nearby opponent health loss inside the short attack window.
+                blackFlashActiveObjects._state.recentAttackAt = os.clock()
+                if blackFlashStatus then
+                    blackFlashStatus.Text = "Attack input detected — waiting for nearby target health to drop."
+                end
+            end
+        end))
+        local watchedTargetModels = {}
+        local playerTargetWatchers = {}
+        -- HealthChanged signals are not consistently exposed on every YBA live rig.
+        -- Share one handler between the signal and a low-rate polling fallback.
+        local processedDamage = setmetatable({}, {__mode = "k"})
+        local function handleBlackFlashDamage(character, humanoid, oldHealth, newHealth)
+            if newHealth >= oldHealth - 0.05 then return end
+            if not blackFlashMod or not blackFlashMod.enabled then return end
+            local now = os.clock()
+            local seen = processedDamage[humanoid]
+            if seen and math.abs((seen.health or -999) - newHealth) < 0.001
+                and now - (seen.at or 0) < 0.65 then
+                return -- same health drop was reported by both signal and polling fallback
+            end
+            processedDamage[humanoid] = {health = newHealth, at = now}
+
+            local lastAttack = blackFlashActiveObjects._state and blackFlashActiveObjects._state.recentAttackAt or 0
+            if now - lastAttack > 5.0 then
+                if blackFlashStatus then blackFlashStatus.Text = "Damage detected, but no attack input/animation was recorded in the last 5 seconds. Try clicking/using the move again." end
+                return
+            end
+            if now - blackFlashLastTrigger < blackFlashCooldown then return end
+
+            local attackerCharacter = blackFlashAttackerCharacter()
+            local attackerRoot = attackerCharacter and (attackerCharacter:FindFirstChild("HumanoidRootPart")
+                or attackerCharacter:FindFirstChild("UpperTorso") or attackerCharacter:FindFirstChild("Torso"))
+            local targetRoot = character and (character:FindFirstChild("HumanoidRootPart")
+                or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso"))
+            if not attackerRoot or not targetRoot then
+                if blackFlashStatus then blackFlashStatus.Text = "Damage detected, but a character root part was missing." end
+                return
+            end
+            local distance = (attackerRoot.Position - targetRoot.Position).Magnitude
+            if distance > 22 then
+                if blackFlashStatus then blackFlashStatus.Text = string.format("Damage detected %.1f studs away (limit 22).", distance) end
+                return
+            end
+            if math.random(1, 100) > blackFlashChance then
+                if blackFlashStatus then blackFlashStatus.Text = "Hit detected; chance roll did not trigger Black Flash." end
+                return
+            end
+
+            blackFlashLastTrigger = now
+            local ok, result = pcall(cloneBlackFlashSource, character)
+            if not ok or result == false then
+                local err = ok and "No compatible Black Flash source could be played." or tostring(result)
+                if blackFlashStatus then blackFlashStatus.Text = "Black Flash playback failed: " .. err end
+                warn("[TrueSight] Black Flash FX failed: " .. err)
+            elseif blackFlashStatus then
+                blackFlashStatus.Text = "Hit confirmed — Black Flash triggered."
+            end
+        end
+
+        local function watchTargetModel(targetPlayer, character)
+            if targetPlayer == player or not character or watchedTargetModels[character] then return end
+            local record = {player = targetPlayer, connection = nil}
+            watchedTargetModels[character] = record
+            task.spawn(function()
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                    or character:WaitForChild("Humanoid", 5)
+                if not humanoid or not humanoid:IsA("Humanoid") or not character.Parent
+                    or watchedTargetModels[character] ~= record then return end
+                local previousHealth = humanoid.Health
+                record.connection = humanoid.HealthChanged:Connect(function(newHealth)
+                    local oldHealth = previousHealth
+                    previousHealth = newHealth
+                    handleBlackFlashDamage(character, humanoid, oldHealth, newHealth)
+                end)
+                keepConnection(record.connection)
+            end)
+        end
+        local function clearWatchedModelsForPlayer(targetPlayer)
+            for character, record in pairs(watchedTargetModels) do
+                if record.player == targetPlayer then
+                    if record.connection then pcall(function() record.connection:Disconnect() end) end
+                    watchedTargetModels[character] = nil
+                end
+            end
+        end
+        local function watchTargetForms(targetPlayer, character)
+            if targetPlayer == player then return end
+            watchTargetModel(targetPlayer, character)
+            task.delay(0.3, function()
+                if not blackFlashMod or not blackFlashMod.enabled then return end
+                local living = workspace:FindFirstChild("Living")
+                local liveCharacter = living and living:FindFirstChild(targetPlayer.Name)
+                if liveCharacter and liveCharacter ~= character then watchTargetModel(targetPlayer, liveCharacter) end
+            end)
+        end
+        local function watchTargetPlayer(targetPlayer)
+            if targetPlayer == player or playerTargetWatchers[targetPlayer] then return end
+            playerTargetWatchers[targetPlayer] = true
+            if targetPlayer.Character then
+                watchTargetForms(targetPlayer, targetPlayer.Character)
+            else
+                task.delay(0.35, function()
+                    if not blackFlashMod or not blackFlashMod.enabled then return end
+                    local living = workspace:FindFirstChild("Living")
+                    local liveCharacter = living and living:FindFirstChild(targetPlayer.Name)
+                    if liveCharacter then watchTargetModel(targetPlayer, liveCharacter) end
+                end)
+            end
+            keepConnection(targetPlayer.CharacterAdded:Connect(function(character)
+                clearWatchedModelsForPlayer(targetPlayer)
+                watchTargetForms(targetPlayer, character)
+            end))
+        end
+        local function bindLivingFolder(living)
+            if not living or not living:IsA("Folder") and not living:IsA("Model") then return end
+            for _, liveCharacter in ipairs(living:GetChildren()) do
+                local targetPlayer = Players:FindFirstChild(liveCharacter.Name)
+                if targetPlayer and targetPlayer ~= player then watchTargetModel(targetPlayer, liveCharacter) end
+            end
+            keepConnection(living.ChildAdded:Connect(function(liveCharacter)
+                local targetPlayer = Players:FindFirstChild(liveCharacter.Name)
+                if targetPlayer and targetPlayer ~= player then watchTargetModel(targetPlayer, liveCharacter) end
+                if liveCharacter.Name == player.Name then
+                    task.defer(function()
+                        if blackFlashMod and blackFlashMod.enabled then attachBlackFlashCharacter(player.Character) end
+                    end)
+                end
+            end))
+        end
+        -- Poll both normal Player.Character rigs and workspace.Living mirrors at 8 Hz.
+        -- Some YBA builds replicate the visible health change only on one of these forms.
+        local healthPollAccumulator = 0
+        local healthPollLast = setmetatable({}, {__mode = "k"})
+        keepConnection(RunService.Heartbeat:Connect(function(dt)
+            if not blackFlashMod or not blackFlashMod.enabled then return end
+            healthPollAccumulator += dt
+            if healthPollAccumulator < 0.125 then return end
+            healthPollAccumulator = 0
+            local candidates = {}
+            local living = workspace:FindFirstChild("Living")
+            if living then
+                for _, character in ipairs(living:GetChildren()) do
+                    -- Some YBA live models don't exactly match a Player.Name. Watch
+                    -- every non-local humanoid under Living and let distance + attack
+                    -- timing reject unrelated damage.
+                    if character ~= player.Character and character.Name ~= player.Name
+                        and character:FindFirstChildOfClass("Humanoid") then
+                        candidates[character] = true
+                    end
+                end
+            end
+            for _, targetPlayer in ipairs(Players:GetPlayers()) do
+                if targetPlayer ~= player and targetPlayer.Character then
+                    candidates[targetPlayer.Character] = targetPlayer
+                end
+            end
+            for character in pairs(candidates) do
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                if humanoid then
+                    local currentHealth = humanoid.Health
+                    local oldHealth = healthPollLast[humanoid]
+                    if oldHealth == nil then
+                        healthPollLast[humanoid] = currentHealth
+                    else
+                        if currentHealth < oldHealth - 0.05 then
+                            handleBlackFlashDamage(character, humanoid, oldHealth, currentHealth)
+                        end
+                        healthPollLast[humanoid] = currentHealth
+                    end
+                end
+            end
+        end))
+
+        attachBlackFlashCharacter(player.Character)
+        for _, targetPlayer in ipairs(Players:GetPlayers()) do watchTargetPlayer(targetPlayer) end
+        keepConnection(Players.PlayerAdded:Connect(watchTargetPlayer))
+        local currentLiving = workspace:FindFirstChild("Living")
+        if currentLiving then
+            bindLivingFolder(currentLiving)
+        else
+            keepConnection(workspace.ChildAdded:Connect(function(child)
+                if child.Name == "Living" then bindLivingFolder(child) end
+            end))
+        end
+        if blackFlashStatus then
+            blackFlashStatus.Text = #blackFlashAssets > 0
+                and "Enabled: watches player + Living health. Chance defaults to 100% for testing; lower it after confirming triggers."
+                or "Enabled, but no named Black Flash assets were found at startup."
+        end
+    end)
+    blackFlashCycle = blackFlashMod.cycle("FX Source", blackFlashNames, 1, function(i)
+        blackFlashSelectedIndex = i
+    end)
+    blackFlashMod.slider("Trigger Chance (%)", 0, 100, blackFlashChance, 1, function(v) blackFlashChance = v end)
+    blackFlashMod.slider("Sound Volume", 0, 2, blackFlashVolume, 0.1, function(v) blackFlashVolume = v end)
+    blackFlashMod.slider("Cooldown (seconds)", 0.2, 5, blackFlashCooldown, 0.1, function(v) blackFlashCooldown = v end)
+    blackFlashMod.slider("VFX Duration", 1, 2.5, blackFlashActiveObjects._state.durationFactor, 0.1, function(v)
+        blackFlashActiveObjects._state.durationFactor = v
+    end)
+    blackFlashMod.slider("Effect Scale", 0.25, 1.0, blackFlashActiveObjects._state.effectScale, 0.05, function(v)
+        blackFlashActiveObjects._state.effectScale = v
+    end)
+    local blackFlashSettings = blackFlashCycle.button.Parent
+    local blackFlashTestButton = addAction({frame = blackFlashSettings, n = 59, panel = blackFlashSettings}, "Test Black Flash FX (self)", function()
+        local ok, err = pcall(cloneBlackFlashSource, player.Character)
+        if not ok and blackFlashStatus then blackFlashStatus.Text = "Test failed: " .. tostring(err) end
+    end)
+    if blackFlashTestButton then blackFlashTestButton.LayoutOrder = 59 end
+    blackFlashStatus = Instance.new("TextLabel")
+    blackFlashStatus.LayoutOrder = 60
+    blackFlashStatus.Size = UDim2.new(1, 0, 0, 42)
+    blackFlashStatus.BackgroundTransparency = 1
+    blackFlashStatus.Font = FONT
+    blackFlashStatus.TextSize = 10
+    blackFlashStatus.TextWrapped = true
+    blackFlashStatus.TextXAlignment = Enum.TextXAlignment.Left
+    blackFlashStatus.TextColor3 = DIM
+    blackFlashStatus.Text = "Black Flash assets are discovered automatically at startup."
+    blackFlashStatus.Parent = blackFlashSettings
+    visualModules.blackFlash = blackFlashMod
+    visualModules.stopBlackFlash = stopBlackFlash
+
+    ------------------------------------------------------------------
+    -- Orbiting orbs: one capped-rate update loop for three local lights.
+    ------------------------------------------------------------------
+    local orbParts, orbConnection = {}, nil
+    local orbSpeed, orbRadius = 1.6, 1.8
+    local orbCharacter
+    local function removeOrbs()
+        if orbConnection then orbConnection:Disconnect(); orbConnection = nil end
+        for _, obj in ipairs(orbParts) do if obj and obj.Parent then obj:Destroy() end end
+        table.clear(orbParts)
+        orbCharacter = nil
+    end
+    local function addOrbs(character)
+        removeOrbs()
+        character = character or player.Character
+        if not character then return end
+        local root = character:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        orbCharacter = character
+        for i = 1, 3 do
+            local orb = Instance.new("Part")
+            orb.Name = "TrueSightOrbitingOrb"
+            orb.Shape = Enum.PartType.Ball
+            orb.Size = Vector3.new(0.22, 0.22, 0.22)
+            orb.Material = Enum.Material.Neon
+            orb.Color = accent
+            orb.CanCollide = false
+            orb.CanTouch = false
+            orb.CanQuery = false
+            orb.CastShadow = false
+            orb.Anchored = true
+            orb.Parent = workspace
+            table.insert(orbParts, orb)
+        end
+        local lastUpdate = 0
+        local t = 0
+        orbConnection = RunService.Heartbeat:Connect(function(dt)
+            if not orbCharacter or player.Character ~= orbCharacter or not root.Parent then return end
+            t += math.min(dt, 0.08) * orbSpeed
+            lastUpdate += dt
+            if lastUpdate < 1 / 30 then return end
+            lastUpdate = 0
+            for i, orb in ipairs(orbParts) do
+                if orb.Parent then
+                    local angle = t + (i - 1) * (math.pi * 2 / #orbParts)
+                    local pos = root.Position + Vector3.new(math.cos(angle) * orbRadius, 0.7 + math.sin(t * 1.2 + i) * 0.45, math.sin(angle) * orbRadius)
+                    orb.CFrame = CFrame.new(pos)
+                end
+            end
+        end)
+    end
+    onAccent(function(c) for _, obj in ipairs(orbParts) do if obj and obj.Parent then obj.Color = c end end end)
+    local orbsMod = addModule(visualPanel, "Orbiting Orbs", function(on)
+        if on then addOrbs(player.Character) else removeOrbs() end
+    end)
+    orbsMod.slider("Orbit Speed", 0.2, 4, orbSpeed, 0.1, function(v) orbSpeed = v end)
+    orbsMod.slider("Orbit Radius", 1, 3.5, orbRadius, 0.1, function(v) orbRadius = v end)
+    visualModules.orbs = orbsMod
+    visualModules.addOrbs = addOrbs
+    visualModules.removeOrbs = removeOrbs
+
+    ------------------------------------------------------------------
+    -- Footstep sparks: throttled emission while walking on the ground.
+    ------------------------------------------------------------------
+    local footstepConnection
+    local function stopFootstepSparks()
+        if footstepConnection then footstepConnection:Disconnect(); footstepConnection = nil end
+    end
+    local function startFootstepSparks(character)
+        stopFootstepSparks()
+        character = character or player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local hum = character and character:FindFirstChildOfClass("Humanoid")
+        if not root or not hum then return end
+        local elapsed = 0
+        local emitted = 0
+        footstepConnection = RunService.Heartbeat:Connect(function(dt)
+            elapsed += dt
+            if elapsed < 0.22 then return end
+            elapsed = 0
+            if player.Character ~= character or not root.Parent then return end
+            if hum.MoveDirection.Magnitude < 0.12 or hum.FloorMaterial == Enum.Material.Air then return end
+            emitted += 1
+            local side = (emitted % 2 == 0) and 0.55 or -0.55
+            local spark = Instance.new("Part")
+            spark.Name = "TrueSightFootstepSpark"
+            spark.Shape = Enum.PartType.Ball
+            spark.Size = Vector3.new(0.13, 0.13, 0.13)
+            spark.Material = Enum.Material.Neon
+            spark.Color = accent
+            spark.Anchored = true
+            spark.CanCollide = false
+            spark.CanTouch = false
+            spark.CanQuery = false
+            spark.CastShadow = false
+            spark.CFrame = CFrame.new(root.Position + root.CFrame.RightVector * side + Vector3.new(0, -2.35, 0))
+            spark.Parent = workspace
+            TweenService:Create(spark, TweenInfo.new(0.42, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Size = Vector3.new(0.02, 0.02, 0.02), Transparency = 1,
+                CFrame = spark.CFrame + Vector3.new(0, 0.35, 0),
+            }):Play()
+            Debris:AddItem(spark, 0.48)
+        end)
+    end
+    local footstepMod = addModule(visualPanel, "Footstep Sparks", function(on)
+        if on then startFootstepSparks(player.Character) else stopFootstepSparks() end
+    end)
+    visualModules.footsteps = footstepMod
+    visualModules.startFootstepSparks = startFootstepSparks
+    visualModules.stopFootstepSparks = stopFootstepSparks
+
+    ------------------------------------------------------------------
+    -- Body glow: local Highlight with adjustable fill/outline strength.
+    ------------------------------------------------------------------
+    local bodyHighlight
+    local bodyFill = 0.84
+    local bodyOutline = 0.12
+    local function removeBodyGlow()
+        if bodyHighlight and bodyHighlight.Parent then bodyHighlight:Destroy() end
+        bodyHighlight = nil
+    end
+    local function addBodyGlow(character)
+        removeBodyGlow()
+        character = character or player.Character
+        if not character then return end
+        local high = Instance.new("Highlight")
+        high.Name = "TrueSightBodyGlow"
+        high.Adornee = character
+        high.FillColor = accent
+        high.OutlineColor = accent
+        high.FillTransparency = bodyFill
+        high.OutlineTransparency = bodyOutline
+        high.DepthMode = Enum.HighlightDepthMode.Occluded
+        high.Parent = character
+        bodyHighlight = high
+    end
+    onAccent(function(c)
+        if bodyHighlight and bodyHighlight.Parent then bodyHighlight.FillColor = c; bodyHighlight.OutlineColor = c end
+    end)
+    local bodyGlowMod = addModule(visualPanel, "Body Glow", function(on)
+        if on then addBodyGlow(player.Character) else removeBodyGlow() end
+    end)
+    bodyGlowMod.slider("Fill Transparency", 0.45, 1, bodyFill, 0.05, function(v)
+        bodyFill = v
+        if bodyHighlight then bodyHighlight.FillTransparency = v end
+    end)
+    bodyGlowMod.slider("Outline Strength", 0, 0.8, 0.12, 0.05, function(v)
+        bodyOutline = v
+        if bodyHighlight then bodyHighlight.OutlineTransparency = v end
+    end)
+    visualModules.bodyGlow = bodyGlowMod
+    visualModules.addBodyGlow = addBodyGlow
+    visualModules.removeBodyGlow = removeBodyGlow
+
+    visualModules.replicatedCosmetic = cosmeticHatMod
+    visualModules.applyReplicatedCosmetic = applySelectedCosmetic
+
+    -- A single startup coordinator scans Stand aura sources first, then scans
+    -- ReplicatedStorage once for both YBA cosmetics and Black Flash FX/audio.
+    task.spawn(function()
+        task.wait(0.25)
+        if not standAuraScanBusy then
+            standAuraScanBusy = true
+            if standAuraScanStatus then standAuraScanStatus.Text = "Startup scan: Stand/skin aura effects..." end
+            local okAura, auraCount = pcall(scanStandAuraSources)
+            if standAuraScanStatus then
+                if okAura then
+                    standAuraScanStatus.Text = "Startup scan complete: found " .. tostring(auraCount) .. " Stand/skin FX source(s)."
+                else
+                    standAuraScanStatus.Text = "Stand FX scan failed: " .. tostring(auraCount)
+                end
+            end
+            standAuraScanBusy = false
+        end
+        if not cosmeticScanBusy then
+            cosmeticScanBusy = true
+            if cosmeticStatus then cosmeticStatus.Text = "Startup scan: YBA cosmetics + Black Flash assets..." end
+            local okCosmetic, count = pcall(scanReplicatedCosmetics)
+            if okCosmetic then
+                selectedCosmeticIndex = 1
+                cosmeticCycle.set(1)
+                if blackFlashCycle then blackFlashCycle.set(1); blackFlashSelectedIndex = 1 end
+                if cosmeticStatus then
+                    cosmeticStatus.Text = string.format("Startup scan complete: %d cosmetics, %d Black Flash source(s).", count, #blackFlashAssets)
+                end
+            elseif cosmeticStatus then
+                cosmeticStatus.Text = "Cosmetic/Black Flash scan failed: " .. tostring(count)
+            end
+            cosmeticScanBusy = false
+        end
+    end)
 end)()
 
 -- RENDER
@@ -2790,7 +5186,7 @@ end)()
 -- many long-lived locals (callbacks/config state), so this keeps Luau's
 -- 200-register limit from being reached while creating later render modules.
 local renderState = (function()
-local renderPanel = makePanel("Render", 225)
+local renderPanel = makePanel("Render", 228)
 
 local fovValue = math.floor(oldFOV + 0.5)
 local fovMod = addModule(renderPanel, "FOV", function(on)
@@ -3046,7 +5442,7 @@ end)()
 -- Keep world-module locals in a separate function scope to stay below Luau's
 -- per-function local-register limit. Return a cleanup closure for the mood FX.
 local cleanupWorldMood = (function()
-local worldPanel = makePanel("World", 420)
+local worldPanel = makePanel("World", 428)
 
 local cleanupWorldMoodInternal = (function()
 local skyboxFaces = {
@@ -3057,6 +5453,9 @@ local skyboxId = ""
 local skyboxTarget
 local skyboxCreated = false
 local skyboxOriginal = {}
+local skyboxRotation = 0
+local skyboxStars = 3000
+local skyboxCelestialBodies = true
 local function normalizeSkyboxId(value)
     value = string.gsub(value, "^%s*(.-)%s*$", "%1")
     if value == "" then return "" end
@@ -3076,6 +5475,9 @@ local function applySkybox()
             for _, face in ipairs(skyboxFaces) do
                 skyboxOriginal[face] = skyboxTarget[face]
             end
+            skyboxOriginal.SkyboxOrientation = skyboxTarget.SkyboxOrientation
+            skyboxOriginal.StarCount = skyboxTarget.StarCount
+            skyboxOriginal.CelestialBodiesShown = skyboxTarget.CelestialBodiesShown
         else
             skyboxTarget = Instance.new("Sky")
             skyboxTarget.Name = "TrueSightSky"
@@ -3086,6 +5488,9 @@ local function applySkybox()
     for i, face in ipairs(skyboxFaces) do
         skyboxTarget[face] = assets[#assets == 1 and 1 or i]
     end
+    skyboxTarget.SkyboxOrientation = Vector3.new(0, skyboxRotation, 0)
+    skyboxTarget.StarCount = skyboxStars
+    skyboxTarget.CelestialBodiesShown = skyboxCelestialBodies
 end
 local function restoreSkybox()
     if not skyboxTarget then return end
@@ -3095,6 +5500,9 @@ local function restoreSkybox()
         for _, face in ipairs(skyboxFaces) do
             if skyboxOriginal[face] then skyboxTarget[face] = skyboxOriginal[face] end
         end
+        if skyboxOriginal.SkyboxOrientation then skyboxTarget.SkyboxOrientation = skyboxOriginal.SkyboxOrientation end
+        if skyboxOriginal.StarCount then skyboxTarget.StarCount = skyboxOriginal.StarCount end
+        if skyboxOriginal.CelestialBodiesShown ~= nil then skyboxTarget.CelestialBodiesShown = skyboxOriginal.CelestialBodiesShown end
     end
     skyboxTarget = nil
     skyboxCreated = false
@@ -3106,22 +5514,47 @@ end)
 -- Ready-made six-face skyboxes using Roblox image assets. The IDs are
 -- preset image assets; access/availability can vary by experience or moderation.
 local skyboxPresets = {
-    ["Purple Nebula"] = {"159454299", "159454296", "159454293", "159454286", "159454300", "159454288"},
-    ["Night Sky"] = {"12064107", "12064152", "12064121", "12063984", "12064115", "12064131"},
+    ["Purple Nebula"] = {"159454286", "159454299", "159454296", "159454293", "159454300", "159454288"},
+    ["Blue Aurora"] = {"12064107", "12064152", "12064121", "12063984", "12064115", "12064131"},
     ["Cabin Sky"] = {"162001887", "161998893", "162001897", "162001904", "162001919", "162001926"},
+    ["Pink Daylight"] = {"271042310", "271042516", "271077243", "271042556", "271042467", "271077958"},
+    ["Vibe"] = {"1417494030", "1417494146", "1417494253", "1417494402", "1417494499", "1417494643"},
+    ["Setting Sun"] = {"626460377", "626460216", "626460513", "626473032", "626458639", "626460625"},
+    ["Fade Blue"] = {"153695414", "153695352", "153695452", "153695320", "153695383", "153695471"},
+    ["Purple Clouds"] = {"151165191", "151165214", "151165197", "151165224", "151165206", "151165227"},
+    ["Twilight"] = {"264909758", "264908339", "264907909", "264909420", "264908886", "264907379"},
+    ["Purple and Blue"] = {"149397684", "149397692", "149397686", "149397697", "149397688", "149397702"},
+    ["DoomSpire"] = {"6050664592", "6050648475", "6050644331", "6050649245", "6050649718", "6050650083"},
+    ["Classic Roblox"] = {"600830446", "600831635", "600832720", "600886090", "600833862", "600835177"},
+    ["CatGirl"] = {"444167615", "444167615", "444167615", "444167615", "444167615", "444167615"},
 }
-local skyboxPresetNames = {"Purple Nebula", "Night Sky", "Cabin Sky"}
+local skyboxPresetNames = {"Purple Nebula", "Blue Aurora", "Cabin Sky", "Pink Daylight", "Vibe", "Setting Sun", "Fade Blue", "Purple Clouds", "Twilight", "Purple and Blue", "DoomSpire", "Classic Roblox", "CatGirl"}
 local skyboxPresetIndex = 1
+skyboxId = table.concat(skyboxPresets[skyboxPresetNames[skyboxPresetIndex]], ",")
+local skyboxInput
 local function applySkyboxPreset(index)
     skyboxPresetIndex = index
     skyboxId = table.concat(skyboxPresets[skyboxPresetNames[index]], ",")
+    if skyboxInput then skyboxInput.Text = skyboxId end
     if skyboxMod and skyboxMod.enabled then
         restoreSkybox()
         applySkybox()
     end
 end
 skyboxMod.cycle("Roblox Skybox Preset", skyboxPresetNames, skyboxPresetIndex, applySkyboxPreset)
-local moodNames = {"Classic", "Nebula", "Aurora Borealis", "Cosmic Night"}
+skyboxMod.slider("Skybox Rotation", 0, 360, 0, 15, function(value)
+    skyboxRotation = value
+    if skyboxTarget and skyboxTarget.Parent then skyboxTarget.SkyboxOrientation = Vector3.new(0, value, 0) end
+end)
+skyboxMod.slider("Star Count", 0, 10000, 3000, 500, function(value)
+    skyboxStars = value
+    if skyboxTarget and skyboxTarget.Parent then skyboxTarget.StarCount = value end
+end)
+skyboxMod.cycle("Sun / Moon", {"On", "Off"}, 1, function(index)
+    skyboxCelestialBodies = index == 1
+    if skyboxTarget and skyboxTarget.Parent then skyboxTarget.CelestialBodiesShown = skyboxCelestialBodies end
+end)
+local moodNames = {"Classic", "Nebula", "Aurora Borealis", "Cosmic Night", "Golden Hour", "Deep Sea", "Neon Storm"}
 local moodIndex = 1
 local moodAtmosphere
 local moodCorrection
@@ -3155,10 +5588,22 @@ local function applySkyMood(index)
         moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.32, 1.5, Color3.fromRGB(90, 255, 205)
         moodCorrection.TintColor, moodCorrection.Saturation = Color3.fromRGB(150, 255, 220), 0.3
         Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.ClockTime = Color3.fromRGB(30, 100, 90), Color3.fromRGB(20, 80, 80), 1
-    else
+    elseif index == 4 then
         moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.5, 2.5, Color3.fromRGB(50, 65, 155)
         moodCorrection.TintColor, moodCorrection.Saturation = Color3.fromRGB(125, 145, 255), 0.15
         Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.ClockTime = Color3.fromRGB(20, 25, 75), Color3.fromRGB(15, 20, 65), 0
+    elseif index == 5 then
+        moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.24, 1.1, Color3.fromRGB(255, 190, 130)
+        moodCorrection.TintColor, moodCorrection.Saturation = Color3.fromRGB(255, 218, 175), 0.18
+        Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.ClockTime = Color3.fromRGB(115, 76, 48), Color3.fromRGB(150, 105, 70), 17.5
+    elseif index == 6 then
+        moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.56, 2.8, Color3.fromRGB(60, 160, 190)
+        moodCorrection.TintColor, moodCorrection.Saturation = Color3.fromRGB(145, 215, 230), -0.05
+        Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.ClockTime = Color3.fromRGB(20, 66, 83), Color3.fromRGB(10, 42, 58), 1.2
+    else
+        moodAtmosphere.Density, moodAtmosphere.Haze, moodAtmosphere.Color = 0.36, 1.8, Color3.fromRGB(90, 75, 205)
+        moodCorrection.TintColor, moodCorrection.Saturation = Color3.fromRGB(175, 120, 255), 0.32
+        Lighting.Ambient, Lighting.OutdoorAmbient, Lighting.ClockTime = Color3.fromRGB(52, 22, 100), Color3.fromRGB(28, 18, 70), 0.4
     end
 end
 local skyMoodMod = addModule(worldPanel, "Sky Mood Presets", function(on)
@@ -3177,9 +5622,15 @@ skyMoodMod.cycle("Preset", moodNames, moodIndex, function(i)
     moodIndex = i
     if skyMoodMod.enabled then applySkyMood(i) end
 end)
-addTextInput(worldPanel, "Skybox asset ID", "One image ID or six comma-separated IDs...", "",
+skyboxInput = addTextInput(worldPanel, "Skybox asset ID", "One image ID or six comma-separated IDs...", skyboxId,
     function(value)
-        skyboxId = value
+        local cleaned = string.gsub(tostring(value or ""), "^%s*(.-)%s*$", "%1")
+        if cleaned == "" then
+            skyboxId = table.concat(skyboxPresets[skyboxPresetNames[skyboxPresetIndex]], ",")
+            if skyboxInput then skyboxInput.Text = skyboxId end
+        else
+            skyboxId = cleaned
+        end
         if skyboxMod.enabled then
             restoreSkybox()
             applySkybox()
@@ -3276,7 +5727,7 @@ end)()
 
 -- HUD
 ;(function()
-local hudPanel = makePanel("HUD", 810)
+local hudPanel = makePanel("HUD", 828)
 
 local fpsConn
 local fpsMod = addModule(hudPanel, "FPS Counter", function(on)
@@ -3817,8 +6268,715 @@ fpsMod.set(true)
 pingMod.set(true)
 
 -- CLIENT
-local clientPanel = makePanel("Client", 615)
+local clientPanel = makePanel("Client", 628)
 
+-- Worthiness Helper: unlocks the prerequisites in the normal Character skill tree
+-- before requesting Worthiness. This uses the game's RemoteFunction; it does not
+-- change local values or pretend the unlock succeeded when the server rejects it.
+;(function()
+    local worthinessMod
+    local worthinessStandConn
+    local worthinessCharacterConn
+    local worthinessRunToken = 0
+    local worthinessRequestBusy = false
+    local worthinessQueuedReason
+
+    ------------------------------------------------------------------
+    -- Lightweight Stand preview. The viewport is shown only while the
+    -- Worthiness Helper is enabled, and rotates at a capped 18 FPS.
+    ------------------------------------------------------------------
+    local previewFrame = Instance.new("Frame")
+    previewFrame.Name = "TrueSightStandPreview"
+    previewFrame.AnchorPoint = Vector2.new(0, 0)
+    local previewViewportSize = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
+    local modulePanelWidth = responsivePanelWidth(previewViewportSize.X)
+    local modulePanelsRight = 18 + 6 * modulePanelWidth + 40
+    local freeLaneRight = previewViewportSize.X - 18
+    local freeLaneWidth = math.max(220, freeLaneRight - modulePanelsRight)
+    local previewWidth = math.max(220, math.min(286, freeLaneWidth - 16))
+    local previewX = modulePanelsRight + (freeLaneWidth - previewWidth) / 2
+    local previewHeight = math.max(220, math.min(356, previewViewportSize.Y - 100))
+    previewFrame.Position = UDim2.fromOffset(previewX, math.max(28, previewViewportSize.Y - previewHeight - 18))
+    previewFrame.Size = UDim2.fromOffset(previewWidth, previewHeight)
+    previewFrame.BackgroundColor3 = BG
+    previewFrame.BackgroundTransparency = 0.03
+    previewFrame.BorderSizePixel = 0
+    previewFrame.Visible = false
+    previewFrame.ZIndex = 200
+    previewFrame.Active = true
+    previewFrame.ClipsDescendants = true
+    previewFrame.Parent = gui
+    uiInteraction.layoutRefs.StandPreview = previewFrame
+    corner(previewFrame, 12)
+    uiInteraction.addResizeGrip(previewFrame, "preview")
+    previewFrame:SetAttribute("TrueSightRole", "panel")
+
+    local previewStroke = Instance.new("UIStroke")
+    previewStroke.Thickness = 1.15
+    previewStroke.Transparency = 0.18
+    previewStroke.Color = accent
+    previewStroke.Parent = previewFrame
+
+    local previewTitle = Instance.new("TextButton")
+    previewTitle.Name = "Title"
+    previewTitle.Position = UDim2.fromOffset(12, 8)
+    previewTitle.Size = UDim2.new(1, -24, 0, 24)
+    previewTitle.BackgroundTransparency = 1
+    previewTitle.AutoButtonColor = false
+    previewTitle.Selectable = false
+    previewTitle.Font = FONTB
+    previewTitle.TextSize = 13
+    previewTitle.TextXAlignment = Enum.TextXAlignment.Left
+    previewTitle.TextColor3 = TEXT
+    previewTitle.Text = "STAND PREVIEW   •   DRAG / RESIZE"
+    previewTitle.ZIndex = 201
+    previewTitle.Active = true
+    previewTitle.Parent = previewFrame
+    previewTitle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragTarget = previewFrame
+            dragStartMouse = input.Position
+            dragStartPos = {position = previewFrame.Position, absolute = previewFrame.AbsolutePosition}
+        end
+    end)
+
+    local previewName = Instance.new("TextLabel")
+    previewName.Name = "StandName"
+    previewName.Position = UDim2.fromOffset(12, 34)
+    previewName.Size = UDim2.new(1, -24, 0, 24)
+    previewName.BackgroundTransparency = 1
+    previewName.Font = FONT
+    previewName.TextSize = 12
+    previewName.TextXAlignment = Enum.TextXAlignment.Left
+    previewName.TextColor3 = DIM
+    previewName.TextTruncate = Enum.TextTruncate.AtEnd
+    previewName.Text = "Stand: detecting..."
+    previewName.ZIndex = 201
+    previewName.Parent = previewFrame
+
+    local previewViewport = Instance.new("ViewportFrame")
+    previewViewport.Name = "RotatingModel"
+    previewViewport.Position = UDim2.fromOffset(8, 62)
+    previewViewport.Size = UDim2.new(1, -16, 1, -100)
+    previewViewport.BackgroundColor3 = SUB
+    previewViewport.BorderSizePixel = 0
+    previewViewport.Active = true
+    previewViewport:SetAttribute("TrueSightRole", "sub")
+    previewViewport.Ambient = Color3.fromRGB(175, 180, 195)
+    previewViewport.LightColor = Color3.fromRGB(255, 255, 255)
+    previewViewport.LightDirection = Vector3.new(-1, -1, -1)
+    previewViewport.ZIndex = 201
+    previewViewport.Parent = previewFrame
+    corner(previewViewport, 6)
+
+    local previewWorld = Instance.new("WorldModel")
+    previewWorld.Name = "StandWorld"
+    previewWorld.Parent = previewViewport
+
+    local previewCamera = Instance.new("Camera")
+    previewCamera.Name = "StandCamera"
+    previewCamera.FieldOfView = 38
+    previewCamera.Parent = previewViewport
+    previewViewport.CurrentCamera = previewCamera
+
+    local previewModel
+    local previewRotationConn
+    local previewAccumulator = 0
+    local previewLoadToken = 0
+    local previewBasePivot
+    local previewYaw = 0
+    local previewManualDrag = false
+    local previewLastDragX = 0
+
+    -- Drag directly on the 3D canvas to rotate the model manually.
+    previewViewport.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            previewManualDrag = true
+            previewLastDragX = input.Position.X
+        end
+    end)
+    table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+        if not previewManualDrag or not previewModel or not previewBasePivot then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local dx = input.Position.X - previewLastDragX
+        previewLastDragX = input.Position.X
+        previewYaw += dx * 0.012
+        pcall(function() previewModel:PivotTo(CFrame.Angles(0, previewYaw, 0) * previewBasePivot) end)
+    end))
+    table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            previewManualDrag = false
+        end
+    end))
+
+    local previewStatus = Instance.new("TextLabel")
+    previewStatus.Name = "Status"
+    previewStatus.AnchorPoint = Vector2.new(0, 1)
+    previewStatus.Position = UDim2.new(0, 12, 1, -6)
+    previewStatus.Size = UDim2.new(1, -24, 0, 24)
+    previewStatus.BackgroundTransparency = 1
+    previewStatus.Font = FONT
+    previewStatus.TextSize = 10
+    previewStatus.TextXAlignment = Enum.TextXAlignment.Left
+    previewStatus.TextColor3 = DIM
+    previewStatus.TextTruncate = Enum.TextTruncate.AtEnd
+    previewStatus.Text = "Waiting for Stand model..."
+    previewStatus.ZIndex = 201
+    previewStatus.Parent = previewFrame
+
+    onAccent(function(c)
+        if previewStroke and previewStroke.Parent then previewStroke.Color = c end
+    end)
+
+    local function getPreviewStandName()
+        local stats = player:FindFirstChild("PlayerStats")
+        local standObj = stats and stats:FindFirstChild("Stand")
+        if not standObj then return "Unknown" end
+        local ok, value = pcall(function() return standObj.Value end)
+        if not ok then return "Unknown" end
+        if typeof(value) == "Instance" then value = value.Name end
+        return tostring(value or "Unknown")
+    end
+
+    local function normalizedStandName(value)
+        return string.lower(tostring(value or "")):gsub("[^%w]", "")
+    end
+
+    local function isNoStandName(value)
+        local n = string.lower(tostring(value or ""))
+        return n == "" or n == "none" or n == "nil" or n == "0" or n == "unknown"
+    end
+
+    local function previewVisiblePartScore(model)
+        if not model then return 0 end
+        local score = 0
+        local ok, descendants = pcall(function() return model:GetDescendants() end)
+        if not ok then return 0 end
+        for _, obj in ipairs(descendants) do
+            if obj:IsA("BasePart") then
+                local name = string.lower(obj.Name)
+                local maxDimension = math.max(obj.Size.X, obj.Size.Y, obj.Size.Z)
+                local minDimension = math.min(obj.Size.X, obj.Size.Y, obj.Size.Z)
+                local big = maxDimension > 120
+                local helperPart = string.find(name, "hitbox", 1, true)
+                    or string.find(name, "collision", 1, true)
+                    or string.find(name, "hurtbox", 1, true)
+                    or name == "humanoidrootpart" or name == "rootpart"
+                -- Ignore local transparency modifiers when scoring: they can hide
+                -- legitimate Stand pieces in the live scene even though the preview clone can show them.
+                local hidden = obj.Transparency >= 0.995 or maxDimension < 0.025
+                if not hidden and not big and not helperPart and minDimension >= 0 then score += 1 end
+            end
+        end
+        if score == 0 then return 0 end
+
+        -- Stand FX contain lots of tiny strips and particles. Don't mistake a
+        -- horizontal line of effect meshes for a whole Stand in the viewport.
+        local boundsOk, _, bounds = pcall(function()
+            local cf, size = model:GetBoundingBox()
+            return cf, size
+        end)
+        if not boundsOk or not bounds then return 0 end
+        local dimensionsGood = bounds.X >= 0.45 and bounds.Y >= 1.45 and bounds.Z >= 0.35
+        local oneMeshStand = score == 1 and bounds.X >= 1.0 and bounds.Y >= 2.0 and bounds.Z >= 0.55
+        if not dimensionsGood and not oneMeshStand then return 0 end
+        return score + math.min(bounds.Y, 12) * 1.5 + math.min(bounds.X * bounds.Z, 8)
+    end
+
+    local function getStandModelWithin(container, targetName, allowContainerModel)
+        if not container then return nil end
+        -- Live YBA characters commonly keep the current skin under StandMorph.
+        local morph = container:FindFirstChild("StandMorph", true)
+        if morph and morph:IsA("Model") and previewVisiblePartScore(morph) > 0 then return morph end
+
+        local wanted = normalizedStandName(targetName)
+        local exact
+        for _, obj in ipairs(container:GetDescendants()) do
+            if obj:IsA("Model") then
+                if wanted ~= "" and normalizedStandName(obj.Name) == wanted then
+                    exact = obj
+                    break
+                end
+            end
+        end
+        if exact and previewVisiblePartScore(exact) > 0 then
+            local nestedMorph = exact:FindFirstChild("StandMorph", true)
+            if nestedMorph and nestedMorph:IsA("Model") and previewVisiblePartScore(nestedMorph) > 0 then return nestedMorph end
+            return exact
+        end
+        if allowContainerModel and container:IsA("Model") and previewVisiblePartScore(container) > 0 then return container end
+
+        -- Asset layouts vary. Rank every nested model and choose the model with
+        -- the most convincing full-Stand geometry, rather than the first little
+        -- VFX strip/part that happens to be inside the asset folder.
+        local best, bestScore = nil, 0
+        for _, obj in ipairs(container:GetDescendants()) do
+            if obj:IsA("Model") then
+                local score = previewVisiblePartScore(obj)
+                if score > bestScore then best, bestScore = obj, score end
+            end
+        end
+        return best
+    end
+
+    local function findStandPreviewSource(standName)
+        local living = workspace:FindFirstChild("Living")
+        local liveCharacter = living and living:FindFirstChild(player.Name)
+        if liveCharacter then
+            local liveMorph = liveCharacter:FindFirstChild("StandMorph", true)
+            if liveMorph and liveMorph:IsA("Model") and previewVisiblePartScore(liveMorph) > 0 then return liveMorph end
+        end
+        local character = player.Character
+        if character then
+            local characterMorph = character:FindFirstChild("StandMorph", true)
+            if characterMorph and characterMorph:IsA("Model") and previewVisiblePartScore(characterMorph) > 0 then return characterMorph end
+        end
+
+        local standsFolder = ReplicatedStorage:FindFirstChild("Stands")
+        if not standsFolder then return nil end
+        local wanted = normalizedStandName(standName)
+        if wanted == "" then return nil end
+
+        -- Prefer an exact child-name match; normalized names ignore spaces/punctuation.
+        for _, child in ipairs(standsFolder:GetChildren()) do
+            if normalizedStandName(child.Name) == wanted then
+                local model = getStandModelWithin(child, standName, true)
+                if model then return model end
+            end
+        end
+        -- Some builds put the StandMorph deeper inside the named asset folder.
+        for _, child in ipairs(standsFolder:GetChildren()) do
+            if string.find(normalizedStandName(child.Name), wanted, 1, true)
+                or string.find(wanted, normalizedStandName(child.Name), 1, true) then
+                local model = getStandModelWithin(child, standName, true)
+                if model then return model end
+            end
+        end
+        -- Last attempt: a model itself may be named after the Stand even when
+        -- the root folder has a generic name.
+        for _, obj in ipairs(standsFolder:GetDescendants()) do
+            if obj:IsA("Model") and normalizedStandName(obj.Name) == wanted then
+                local nestedMorph = obj:FindFirstChild("StandMorph", true)
+                if nestedMorph and nestedMorph:IsA("Model") and previewVisiblePartScore(nestedMorph) > 0 then return nestedMorph end
+                if previewVisiblePartScore(obj) > 0 then return obj end
+            end
+        end
+        return nil
+    end
+
+    local function stopPreviewRotation()
+        if previewRotationConn then
+            previewRotationConn:Disconnect()
+            previewRotationConn = nil
+        end
+        previewAccumulator = 0
+    end
+
+    local function refitPreviewCamera()
+        if not previewModel or not previewModel.Parent then return end
+        local boundsOk, _, bounds = pcall(function()
+            local cf, size = previewModel:GetBoundingBox()
+            return cf, size
+        end)
+        if not boundsOk or not bounds then return end
+        local width = math.max(1, previewViewport.AbsoluteSize.X)
+        local height = math.max(1, previewViewport.AbsoluteSize.Y)
+        local aspect = width / height
+        local vfov = math.rad(previewCamera.FieldOfView)
+        local hfov = 2 * math.atan(math.tan(vfov / 2) * aspect)
+        local distanceV = math.max(bounds.Y, 0.65) / (2 * math.tan(vfov / 2))
+        local distanceH = math.max(bounds.X, bounds.Z, 0.65) / (2 * math.tan(hfov / 2))
+        local distance = math.max(distanceV, distanceH, bounds.Z * 0.72, 2.6) * 1.30
+        local lookY = math.clamp(bounds.Y * 0.04, -0.6, 0.6)
+        previewCamera.CFrame = CFrame.lookAt(Vector3.new(distance * 0.30, lookY, distance), Vector3.new(0, lookY, 0))
+        previewCamera.Focus = CFrame.new(0, 0, 0)
+    end
+
+    previewViewport:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        task.defer(refitPreviewCamera)
+    end)
+
+    local function removePreviewModel()
+        stopPreviewRotation()
+        if previewModel and previewModel.Parent then
+            previewModel:Destroy()
+        end
+        previewModel = nil
+        previewBasePivot = nil
+        previewYaw = 0
+    end
+
+    local function buildStandPreview(source, standName)
+        if not source or not source:IsA("Model") then return false, "No model source" end
+
+        local originals = {source}
+        local okDesc, sourceDescendants = pcall(function() return source:GetDescendants() end)
+        if okDesc then for _, obj in ipairs(sourceDescendants) do table.insert(originals, obj) end end
+        local previousArchivable = {}
+        for _, obj in ipairs(originals) do
+            previousArchivable[obj] = obj.Archivable
+            pcall(function() obj.Archivable = true end)
+        end
+        local cloneOk, clone = pcall(function() return source:Clone() end)
+        for obj, was in pairs(previousArchivable) do pcall(function() obj.Archivable = was end) end
+        if not cloneOk or not clone or not clone:IsA("Model") then
+            if clone and clone.Destroy then pcall(function() clone:Destroy() end) end
+            return false, "Could not clone the Stand model"
+        end
+
+        clone.Name = "TrueSightStandPreviewModel"
+        local parts = {}
+        local sourcePrimaryName = source.PrimaryPart and source.PrimaryPart.Name
+        for _, obj in ipairs(clone:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                local name = string.lower(obj.Name)
+                local maxDimension = math.max(obj.Size.X, obj.Size.Y, obj.Size.Z)
+                local protectedRoot = name == "humanoidrootpart" or name == "rootpart" or name == "standroot" or name == "root"
+                local helperPart = not protectedRoot and (
+                    string.find(name, "hitbox", 1, true)
+                    or string.find(name, "collision", 1, true)
+                    or string.find(name, "hurtbox", 1, true))
+                local tooLarge = maxDimension > 120
+                if helperPart or tooLarge then
+                    pcall(function() obj:Destroy() end)
+                else
+                    -- Keep every mesh/part (even if locally hidden in the live scene),
+                    -- and stabilise it before entering WorldModel so Motor6Ds cannot
+                    -- snap visible pieces out of the captured Stand pose.
+                    -- Preview must show the actual Stand opaque even when its live
+                    -- game copy uses LocalTransparencyModifier/Transparency for fade
+                    -- transitions. Keep only technical root parts hidden.
+                    obj.Transparency = protectedRoot and 1 or 0
+                    if not protectedRoot and (obj.Material == Enum.Material.ForceField or obj.Material == Enum.Material.Glass) then
+                        obj.Material = Enum.Material.SmoothPlastic
+                    end
+                    obj.CanCollide = false
+                    obj.CanTouch = false
+                    obj.CanQuery = false
+                    obj.CastShadow = false
+                    obj.Massless = true
+                    obj.Anchored = true
+                    pcall(function() obj.LocalTransparencyModifier = 0 end)
+                    table.insert(parts, obj)
+                end
+            elseif obj:IsA("Humanoid") or obj:IsA("Animator") or obj:IsA("AnimationController")
+                or obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript")
+                or obj:IsA("Constraint") or obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
+                or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles")
+                or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight")
+                or obj:IsA("Sound") or obj:IsA("BillboardGui") or obj:IsA("Highlight") then
+                pcall(function() obj:Destroy() end)
+            elseif obj:IsA("Decal") or obj:IsA("Texture") then
+                obj.Transparency = 0
+            end
+        end
+        if #parts == 0 then
+            clone:Destroy()
+            return false, "Stand model has no visible parts after filtering hidden helper geometry"
+        end
+
+        local rootPart
+        if sourcePrimaryName then
+            local candidate = clone:FindFirstChild(sourcePrimaryName, true)
+            if candidate and candidate:IsA("BasePart") then rootPart = candidate end
+        end
+        if not rootPart then
+            for _, part in ipairs(parts) do
+                local n = string.lower(part.Name)
+                if n == "humanoidrootpart" or n == "rootpart" or n == "standroot" or n == "root" then
+                    rootPart = part
+                    break
+                end
+            end
+        end
+        rootPart = rootPart or parts[1]
+
+        -- Set PrimaryPart and anchors while the clone is still outside the WorldModel.
+        -- All parts are static in a viewport; preserving their cloned CFrames is more
+        -- reliable than letting game rigs re-solve joints in a no-physics preview.
+        pcall(function() clone.PrimaryPart = rootPart end)
+        for _, part in ipairs(parts) do part.Anchored = true end
+        clone.Parent = previewWorld
+
+        -- Centre only after anchoring the model, so a first physics step cannot split it.
+        RunService.Heartbeat:Wait()
+        local boxOk, boxCF, bounds = pcall(function()
+            local cf, size = clone:GetBoundingBox()
+            return cf, size
+        end)
+        if not boxOk or not bounds then
+            clone:Destroy()
+            return false, "Could not measure the Stand model"
+        end
+        pcall(function() clone:PivotTo(CFrame.new(-boxCF.Position) * clone:GetPivot()) end)
+        RunService.Heartbeat:Wait()
+        local recenterOk, recenterCF = pcall(function()
+            local cf = clone:GetBoundingBox()
+            return cf
+        end)
+        if recenterOk and recenterCF and recenterCF.Position.Magnitude > 0.1 then
+            pcall(function() clone:PivotTo(CFrame.new(-recenterCF.Position) * clone:GetPivot()) end)
+        end
+
+        removePreviewModel()
+        previewModel = clone
+        previewBasePivot = clone:GetPivot()
+        refitPreviewCamera()
+        previewYaw = 0
+        previewName.Text = "Stand: " .. tostring(standName)
+        previewStatus.Text = "Drag the model to rotate • " .. tostring(#parts) .. " visible parts"
+
+        previewRotationConn = RunService.Heartbeat:Connect(function(dt)
+            if not previewFrame.Visible or not previewModel or not previewModel.Parent or not previewBasePivot then return end
+            if previewManualDrag then
+                previewAccumulator = 0
+                return
+            end
+            previewAccumulator += dt
+            if previewAccumulator < (1 / 20) then return end
+            local rotateDt = previewAccumulator
+            previewAccumulator = 0
+            previewYaw += math.rad(14) * rotateDt
+            pcall(function()
+                previewModel:PivotTo(CFrame.Angles(0, previewYaw, 0) * previewBasePivot)
+            end)
+        end)
+        return true
+    end
+
+    local function refreshStandPreview()
+        if not worthinessMod or not worthinessMod.enabled then return end
+        previewLoadToken += 1
+        local token = previewLoadToken
+        local standName = getPreviewStandName()
+        previewName.Text = "Stand: " .. tostring(standName)
+        removePreviewModel()
+
+        if isNoStandName(standName) then
+            previewStatus.Text = "No Stand equipped yet"
+            return
+        end
+        previewStatus.Text = "Finding 3D model..."
+        task.spawn(function()
+            local lastError = "Stand model not found"
+            for attempt = 1, 3 do
+                if token ~= previewLoadToken or not previewFrame.Visible then return end
+                local sourceOk, source = pcall(findStandPreviewSource, standName)
+                if sourceOk and source then
+                    local built, err = buildStandPreview(source, standName)
+                    if token ~= previewLoadToken or not previewFrame.Visible then
+                        if previewModel and previewModel.Parent then previewModel:Destroy() end
+                        previewModel = nil
+                        return
+                    end
+                    if built then return end
+                    lastError = tostring(err or lastError)
+                end
+                if attempt < 3 then task.wait(0.40) end
+            end
+            if token == previewLoadToken and previewFrame.Visible then
+                previewStatus.Text = "No 3D model found in loaded Stand assets"
+                warn("[TrueSight] Stand preview: " .. lastError)
+            end
+        end)
+    end
+
+    local function worthinessNotice(message, isError)
+        if type(notifyConfig) == "function" then
+            pcall(notifyConfig, message, isError == true)
+        elseif isError then
+            warn("[TrueSight] " .. message)
+        else
+            print("[TrueSight] " .. message)
+        end
+    end
+
+    local function getCharacterSkillRemote()
+        -- Use the player's current Character RemoteFunction first. This is the
+        -- path used by commonly published YBA LearnSkill examples. The model in
+        -- workspace.Living is only a fallback, since its instance can be stale
+        -- during/just after a Rokakaka reset.
+        local character = player.Character
+        if character then
+            local remote = character:FindFirstChild("RemoteFunction")
+            if not (remote and remote:IsA("RemoteFunction")) then
+                remote = character:WaitForChild("RemoteFunction", 5)
+            end
+            if remote and remote:IsA("RemoteFunction") then
+                return remote, "LocalPlayer.Character.RemoteFunction"
+            end
+        end
+
+        local living = workspace:FindFirstChild("Living")
+        local livingCharacter = living and living:FindFirstChild(player.Name)
+        local livingRemote = livingCharacter and livingCharacter:FindFirstChild("RemoteFunction")
+        if livingRemote and livingRemote:IsA("RemoteFunction") then
+            return livingRemote, "workspace.Living." .. player.Name .. ".RemoteFunction (fallback)"
+        end
+        return nil, "Could not find a direct RemoteFunction on the current Character or its Living fallback"
+    end
+
+    local requestWorthiness
+    requestWorthiness = function(reason)
+        if not worthinessMod or not worthinessMod.enabled then return end
+        if worthinessRequestBusy then
+            worthinessQueuedReason = reason or "reset"
+            return
+        end
+
+        worthinessRequestBusy = true
+        local token = worthinessRunToken
+        task.spawn(function()
+            -- A Rokakaka updates Stand/PlayerStats before every skill-tree state
+            -- has necessarily finished resetting on the server. Give that reset
+            -- time to settle before sending LearnSkill. Startup still uses a short wait.
+            local reasonText = string.lower(tostring(reason or ""))
+            local afterReset = string.find(reasonText, "reset", 1, true) ~= nil
+            task.wait(afterReset and 2.0 or 0.30)
+
+            local remote, remotePathOrError = getCharacterSkillRemote()
+            local resultLines = {}
+            -- Current YBA uses a single "Worthiness" node (not Worthiness I/II).
+            -- Unlock the three Stamina prerequisites in order, then request Worthiness once.
+            local sequence = {
+                "Stamina I",
+                "Stamina II",
+                "Stamina III",
+                "Worthiness",
+            }
+
+            if not remote then
+                table.insert(resultLines, "REMOTE ERROR: " .. tostring(remotePathOrError))
+            else
+                for _, skillName in ipairs(sequence) do
+                    if token ~= worthinessRunToken or not worthinessMod.enabled then break end
+
+                    local callOk, response = pcall(function()
+                        return remote:InvokeServer("LearnSkill", {
+                            Skill = skillName,
+                            SkillTreeType = "Character",
+                        })
+                    end)
+
+                    local result
+                    if not callOk then
+                        result = "ERROR: " .. tostring(response)
+                    elseif response == false then
+                        result = "returned false (may be already owned, locked, or out of points)"
+                    elseif response == nil then
+                        -- YBA's LearnSkill RemoteFunction can perform the action
+                        -- without returning a value; nil is inconclusive, not an error.
+                        result = "no return value (normal/inconclusive; verify in Skill Tree)"
+                    else
+                        result = tostring(response)
+                    end
+                    table.insert(resultLines, skillName .. " => " .. result)
+
+                    -- Leave time for each prerequisite to replicate before the next
+                    -- node is requested. This is only four calls, so reliability is
+                    -- more useful than shaving a few tenths of a second here.
+                    task.wait(0.55)
+                end
+            end
+
+            if token == worthinessRunToken and worthinessMod.enabled then
+                local resultText = table.concat(resultLines, " | ")
+                if remote then
+                    print("[TrueSight] Skill-tree requests finished via " .. tostring(remotePathOrError) .. ": " .. resultText)
+                else
+                    warn("[TrueSight] Skill-tree request setup failed: " .. resultText)
+                end
+                if not remote then
+                    worthinessNotice("Worthiness helper could not find the live skill remote. See executor output.", true)
+                else
+                    worthinessNotice(
+                        "Skill-tree requests attempted. Reopen Character Skill Tree to verify; remote replies alone do not confirm upgrades.",
+                        false
+                    )
+                end
+            end
+
+            worthinessRequestBusy = false
+            local queuedReason = worthinessQueuedReason
+            worthinessQueuedReason = nil
+            if queuedReason and worthinessMod and worthinessMod.enabled then
+                task.delay(0.30, function()
+                    requestWorthiness(queuedReason)
+                end)
+            end
+        end)
+    end
+
+    worthinessMod = addModule(clientPanel, "Worthiness Helper", function(on)
+        worthinessRunToken += 1
+        worthinessQueuedReason = nil
+        if worthinessStandConn then
+            worthinessStandConn:Disconnect()
+            worthinessStandConn = nil
+        end
+        if worthinessCharacterConn then
+            worthinessCharacterConn:Disconnect()
+            worthinessCharacterConn = nil
+        end
+        if not on then
+            previewFrame.Visible = false
+            previewLoadToken += 1
+            removePreviewModel()
+            previewStatus.Text = "Preview paused while helper is off"
+            return
+        end
+
+        previewFrame.Visible = true
+        refreshStandPreview()
+
+        local token = worthinessRunToken
+        task.spawn(function()
+            local stats = player:WaitForChild("PlayerStats", 15)
+            if token ~= worthinessRunToken or not worthinessMod.enabled then return end
+            if not stats then
+                worthinessNotice("Could not find PlayerStats; automatic Rokakaka-reset detection is unavailable.", true)
+                return
+            end
+            local standValue = stats:WaitForChild("Stand", 10)
+            if token ~= worthinessRunToken or not worthinessMod.enabled then return end
+            if not standValue then
+                worthinessNotice("Could not find PlayerStats.Stand; automatic Rokakaka-reset detection is unavailable.", true)
+                return
+            end
+
+            worthinessStandConn = standValue:GetPropertyChangedSignal("Value"):Connect(function()
+                if token ~= worthinessRunToken or not worthinessMod.enabled then return end
+                task.delay(0.2, function()
+                    if token == worthinessRunToken and worthinessMod.enabled then
+                        refreshStandPreview()
+                    end
+                end)
+                if string.lower(tostring(standValue.Value)) == "none" then
+                    task.delay(1.0, function()
+                        if token == worthinessRunToken and worthinessMod.enabled then
+                            requestWorthiness("Rokakaka/Stand reset")
+                        end
+                    end)
+                end
+            end)
+
+            worthinessCharacterConn = player.CharacterAdded:Connect(function()
+                task.delay(0.9, function()
+                    if token ~= worthinessRunToken or not worthinessMod.enabled then return end
+                    refreshStandPreview()
+                    if string.lower(tostring(standValue.Value)) == "none" then
+                        requestWorthiness("post-reset character respawn")
+                    end
+                end)
+            end)
+        end)
+
+        requestWorthiness("startup/enable")
+    end)
+    -- Enabled by default; saved TrueSight configs can still turn it off.
+    worthinessMod.set(true)
+end)()
 ;(function()
 local function applyModuleSearch(text)
     local query = string.lower(text)
@@ -3843,9 +7001,54 @@ end)
 end)()
 
 do
-    local w = addCycle(clientPanel.frame, "Theme Color", presetNames, accentIndex, setAccentIndex, "Client/Theme Color")
+    local w = addCycle(clientPanel.frame, "Accent Color", presetNames, accentIndex, setAccentIndex, "Client/Theme Color")
     w.button.LayoutOrder = nextOrder(clientPanel)
     table.insert(colorWidgets, w)
+end
+
+do
+local paletteWidget = addCycle(clientPanel.frame, "UI Palette", uiThemeController.names, uiThemeController.getIndex(),
+    function(index) uiThemeController.apply(index) end, "Client/UI Palette")
+paletteWidget.button.LayoutOrder = nextOrder(clientPanel)
+uiThemeController.apply(1)
+
+local panelOpacityWidget = addSlider(clientPanel.frame, "Panel Transparency", 0.02, 0.24, 0.05, 0.01,
+    function(value) menuFxController.setPanelTransparency(value) end, "Client/Panel Transparency")
+panelOpacityWidget.LayoutOrder = nextOrder(clientPanel)
+local cornerWidget = addSlider(clientPanel.frame, "UI Corner Radius", 3, 14, 8, 1,
+    function(value) menuFxController.setCornerRadius(value) end, "Client/UI Corner Radius")
+cornerWidget.LayoutOrder = nextOrder(clientPanel)
+local fontWidget = addCycle(clientPanel.frame, "UI Font", uiThemeController.fontNames, uiThemeController.getFontIndex(),
+    function(index) uiThemeController.setFont(index) end, "Client/UI Font")
+fontWidget.button.LayoutOrder = nextOrder(clientPanel)
+uiThemeController.setFont(1)
+
+local menuBgMod = addModule(clientPanel, "Animated Menu Background", function(on)
+    menuFxController.setEnabled(on)
+end)
+menuBgMod.cycle("Effect", menuFxController.styleNames, menuFxController.getStyle(), function(index)
+    menuFxController.setStyle(index)
+end)
+menuBgMod.slider("Glow Strength", 0.1, 0.9, 0.42, 0.05, function(value)
+    menuFxController.setOpacity(value)
+end)
+menuBgMod.slider("Motion Speed", 0.1, 1.8, 0.55, 0.05, function(value)
+    menuFxController.setSpeed(value)
+end)
+menuBgMod.slider("Density", 8, 36, 18, 2, function(value)
+    menuFxController.setDensity(value)
+end)
+menuBgMod.slider("Pattern Softness", 0.15, 1, 0.72, 0.05, function(value)
+    menuFxController.setSoftness(value)
+end)
+menuBgMod.slider("Cursor Glow / Parallax", 0, 1.25, 0.68, 0.05, function(value)
+    menuFxController.setCursorStrength(value)
+end)
+menuBgMod.set(true)
+addAction(clientPanel, "Reset UI Layout", function()
+    uiInteraction.resetLayout()
+    notifyConfig("UI layout reset", false)
+end)
 end
 
 ------------------------------------------------------------------
@@ -4131,6 +7334,7 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, pr
     if processed then return end
     if input.KeyCode == keyUiState.menuKey then
         clickGui.Visible = not clickGui.Visible
+        if uiInteraction then uiInteraction.closeDropdown() end
         return
     end
     for _, m in ipairs(modules) do
@@ -4146,11 +7350,22 @@ table.insert(connections, UserInputService.InputChanged:Connect(function(input)
         or input.UserInputType == Enum.UserInputType.Touch
     if not moving then return end
 
-    if dragTarget then
+    local interactionState = uiInteraction and uiInteraction.resizeState
+    local resize = interactionState and interactionState.resizeState
+    if resize and resize.target and resize.target.Parent then
+        local delta = input.Position - resize.startMouse
+        local w = math.clamp(resize.startSize.X.Offset + delta.X, resize.minW, resize.maxW)
+        local h = math.clamp(resize.startSize.Y.Offset + delta.Y, resize.minH, resize.maxH)
+        resize.target.Size = UDim2.fromOffset(w, h)
+    elseif dragTarget then
         local delta = input.Position - dragStartMouse
-        dragTarget.Position = UDim2.fromOffset(
-            dragStartPos.X.Offset + delta.X,
-            dragStartPos.Y.Offset + delta.Y
+        -- Preserve the element's original Scale components and add deltas only
+        -- to its Offset components. This keeps dragging in parent-local space and
+        -- prevents the release snap/clamp jump caused by using screen coordinates.
+        local startPosition = dragStartPos and dragStartPos.position or dragTarget.Position
+        dragTarget.Position = UDim2.new(
+            startPosition.X.Scale, startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale, startPosition.Y.Offset + delta.Y
         )
     elseif activeSlider then
         activeSlider(input.Position.X)
@@ -4160,7 +7375,13 @@ end))
 table.insert(connections, UserInputService.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        if dragTarget then requestSave() end
+        if dragTarget or (uiInteraction and uiInteraction.resizeState and uiInteraction.resizeState.resizeState) then requestSave() end
+        if dragTarget and dragTarget.Parent then pcall(uiInteraction.clampObject, dragTarget) end
+        local interactionState = uiInteraction and uiInteraction.resizeState
+        if interactionState and interactionState.resizeState then
+            pcall(uiInteraction.clampObject, interactionState.resizeState.target)
+            interactionState.resizeState = nil
+        end
         dragTarget = nil
         activeSlider = nil
     end
@@ -4184,12 +7405,27 @@ table.insert(connections, player.CharacterAdded:Connect(function(character)
     if visualModules.standAura.enabled then addStandAura(character) end
     if visualModules.jump.enabled then hookJump(character) end
     if visualModules.ghost.enabled then addGhost() end
+    if visualModules.replicatedCosmetic and visualModules.replicatedCosmetic.enabled and visualModules.applyReplicatedCosmetic then
+        task.defer(function() pcall(visualModules.applyReplicatedCosmetic, character) end)
+    end
+    if visualModules.halo and visualModules.halo.enabled and visualModules.addHalo then
+        task.defer(function() pcall(visualModules.addHalo, character) end)
+    end
+    if visualModules.orbs and visualModules.orbs.enabled and visualModules.addOrbs then
+        task.defer(function() pcall(visualModules.addOrbs, character) end)
+    end
+    if visualModules.footsteps and visualModules.footsteps.enabled and visualModules.startFootstepSparks then
+        task.defer(function() pcall(visualModules.startFootstepSparks, character) end)
+    end
+    if visualModules.bodyGlow and visualModules.bodyGlow.enabled and visualModules.addBodyGlow then
+        task.defer(function() pcall(visualModules.addBodyGlow, character) end)
+    end
 end))
 
 ------------------------------------------------------------------
 -- Unload
 ------------------------------------------------------------------
-local function cleanup()
+modules._unloadCleanup = function()
     if chatConfigConnection then
         pcall(function() chatConfigConnection:Disconnect() end)
         chatConfigConnection = nil
@@ -4219,6 +7455,11 @@ local function cleanup()
     verity.remove()
     unhookJump()
     removeGhost()
+    if visualModules.removeHalo then pcall(visualModules.removeHalo) end
+    if visualModules.removeOrbs then pcall(visualModules.removeOrbs) end
+    if visualModules.stopFootstepSparks then pcall(visualModules.stopFootstepSparks) end
+    if visualModules.removeBodyGlow then pcall(visualModules.removeBodyGlow) end
+    if visualModules.stopBlackFlash then pcall(visualModules.stopBlackFlash) end
     if nameTagLoop then nameTagLoop:Disconnect() nameTagLoop = nil end
     for plr in pairs(nameTagObjects) do removeNameTag(plr) end
     if cleanupWorldMood then pcall(cleanupWorldMood) end
@@ -4434,6 +7675,7 @@ saveConfig = function(profileName)
         modules = {},
         values = {},
         panels = {},
+        panelSizes = {},
         statsPosition = {
             x = statsFrame.Position.X.Offset,
             y = statsFrame.Position.Y.Offset,
@@ -4455,6 +7697,10 @@ saveConfig = function(profileName)
                 y = panel.Position.Y.Offset,
             }
         end
+        data.panelSizes[title] = {
+            w = panel.Size.X.Offset,
+            h = panel.Size.Y.Offset,
+        }
     end
 
     local encodedOk, encoded = pcall(function()
@@ -4546,6 +7792,19 @@ local function applyConfig(data)
             end
         end
 
+        if type(data.panelSizes) == "table" then
+            for title, size in pairs(data.panelSizes) do
+                local panel = panelRegistry[title]
+                if panel and type(size) == "table" and type(size.w) == "number" and type(size.h) == "number" then
+                    pcall(function()
+                        local viewport = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
+                        panel.Size = UDim2.fromOffset(
+                            math.clamp(size.w, 132, math.max(132, viewport.X - 16)),
+                            math.clamp(size.h, 250, math.max(250, viewport.Y - 24)))
+                    end)
+                end
+            end
+        end
         if type(data.panels) == "table" then
             for title, pos in pairs(data.panels) do
                 local panel = panelRegistry[title]
@@ -4555,6 +7814,8 @@ local function applyConfig(data)
                 end
             end
         end
+        uiInteraction.clampAll()
+        task.defer(uiInteraction.clampAll)
 
         if type(data.statsPosition) == "table"
             and type(data.statsPosition.x) == "number"
@@ -4604,9 +7865,10 @@ notifyConfig = function(message, isError)
         configNotice.Name = "ConfigNotice"
         configNotice.AnchorPoint = Vector2.new(0.5, 0)
         configNotice.Position = UDim2.new(0.5, 0, 0, 12)
-        configNotice.Size = UDim2.fromOffset(300, 30)
+        configNotice.Size = UDim2.fromOffset(340, 34)
         configNotice.BackgroundColor3 = BG
-        configNotice.BackgroundTransparency = 0.08
+        configNotice.BackgroundTransparency = 0.04
+        configNotice:SetAttribute("TrueSightRole", "panel")
         configNotice.BorderSizePixel = 0
         configNotice.Font = FONTB
         configNotice.TextSize = 13
@@ -4614,10 +7876,12 @@ notifyConfig = function(message, isError)
         configNotice.TextWrapped = true
         configNotice.ZIndex = 100
         configNotice.Parent = gui
-        corner(configNotice, 6)
+        corner(configNotice, 9)
         local stroke = Instance.new("UIStroke")
         stroke.Thickness = 1
         stroke.Parent = configNotice
+        stroke:SetAttribute("TrueSightRole", "accent-stroke")
+        onAccent(function(c) if stroke.Parent then stroke.Color = c end end)
     end
 
     configNoticeToken += 1
@@ -4759,7 +8023,7 @@ pcall(function()
     end)
 end)
 
-addAction(clientPanel, "Unload Client", cleanup)
+addAction(clientPanel, "Unload Client", modules._unloadCleanup)
 
 -- Auto-load after the UI and module callbacks have finished initializing. The
 -- dedicated snapshot is authoritative when present; the selected profile file
