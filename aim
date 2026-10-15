@@ -2380,23 +2380,43 @@ local menuFxController = (function()
     end
 
     local function addHex(x, y, size, phase, vx, vy)
-        local obj = Instance.new("TextLabel")
+        -- Build the outline from six actual line segments instead of a Unicode
+        -- glyph. Font fallback can turn the glyph into a box/rectangle on some clients.
+        local obj = Instance.new("Frame")
         obj.Name = "NeonHexagonOutline"
         obj.AnchorPoint = Vector2.new(0.5, 0.5)
         obj.Position = UDim2.fromScale(x, y)
         obj.Size = UDim2.fromOffset(size, size)
         obj.BackgroundTransparency = 1
-        obj.Text = "⬡"
-        obj.Font = Enum.Font.GothamMedium
-        obj.TextSize = math.max(22, math.floor(size * 0.72))
-        obj.TextColor3 = accent
-        obj.TextStrokeColor3 = accent
-        obj.TextStrokeTransparency = 0.45
-        obj.TextTransparency = 0.48
+        obj.BorderSizePixel = 0
         obj.Active = false
         obj.Parent = canvas
-        table.insert(pieces, {obj = obj, kind = "hex", x = x, y = y, phase = phase,
-            vx = vx, vy = vy, alpha = 0.5})
+        local edges = {}
+        local radius = size * 0.43
+        local points = {}
+        for i = 1, 6 do
+            local angle = math.rad(-30 + (i - 1) * 60)
+            points[i] = Vector2.new(math.cos(angle) * radius, math.sin(angle) * radius)
+        end
+        for i = 1, 6 do
+            local a = points[i]
+            local b = points[(i % 6) + 1]
+            local delta = b - a
+            local edge = Instance.new("Frame")
+            edge.Name = "HexEdge"
+            edge.AnchorPoint = Vector2.new(0.5, 0.5)
+            edge.Position = UDim2.new(0.5, (a.X + b.X) * 0.5, 0.5, (a.Y + b.Y) * 0.5)
+            edge.Size = UDim2.fromOffset(delta.Magnitude + 1.5, 1.7)
+            edge.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+            edge.BackgroundColor3 = accent
+            edge.BackgroundTransparency = 0.48
+            edge.BorderSizePixel = 0
+            edge.Active = false
+            edge.Parent = obj
+            table.insert(edges, edge)
+        end
+        table.insert(pieces, {obj = obj, edges = edges, kind = "hex", x = x, y = y, size = size,
+            phase = phase, vx = vx, vy = vy, alpha = 0.5})
     end
 
     local function addGlowRing(x, y, size, phase)
@@ -2557,7 +2577,11 @@ local menuFxController = (function()
         })
         for _, p in ipairs(pieces) do
             if p.obj and p.obj.Parent then
-                if p.obj:IsA("TextLabel") then
+                if p.kind == "hex" and p.edges then
+                    for _, edge in ipairs(p.edges) do
+                        if edge and edge.Parent then edge.BackgroundColor3 = color end
+                    end
+                elseif p.obj:IsA("TextLabel") then
                     p.obj.TextColor3 = color
                     p.obj.TextStrokeColor3 = color
                 elseif p.obj:IsA("GuiObject") then
@@ -2615,7 +2639,15 @@ local menuFxController = (function()
                     if p.x < 0.025 or p.x > 0.975 then p.vx = -(p.vx or 0); p.x = math.clamp(p.x, 0.025, 0.975) end
                     if p.y < 0.04 or p.y > 0.96 then p.vy = -(p.vy or 0); p.y = math.clamp(p.y, 0.04, 0.96) end
                     obj.Position = UDim2.fromScale(p.x + parallaxX, p.y + parallaxY)
-                    if obj:IsA("TextLabel") then
+                    if p.kind == "hex" and p.edges then
+                        local edgeTransparency = math.clamp(1 - opacity * p.alpha * (0.62 + pulse * 0.30) + (1 - softness) * 0.12, 0.12, 0.94)
+                        for _, edge in ipairs(p.edges) do
+                            if edge and edge.Parent then
+                                edge.BackgroundTransparency = edgeTransparency
+                            end
+                        end
+                        obj.BackgroundTransparency = 1
+                    elseif obj:IsA("TextLabel") then
                         obj.TextTransparency = 1 - opacity * p.alpha * (0.5 + 0.38 * pulse)
                         obj.TextStrokeTransparency = math.clamp(0.92 - opacity * softness * (0.42 + pulse * 0.14), 0.48, 0.94)
                     else
@@ -4209,13 +4241,15 @@ end)()
     cosmeticStatus.Parent = settingsPanel
 
     ------------------------------------------------------------------
-    -- Neon Halo: two bead-rings. Individual spherical segments create a
-    -- clearly open centre rather than a disk-like stack of overlapping bars.
+    -- Neon Halo: one thin, continuous-looking open ring made from Beam segments.
+    -- This avoids the thick, dotted double-ring that obscured the centre in-game.
     ------------------------------------------------------------------
     local haloParts = {}
     local haloSegmentRecords = {}
     local haloHead
     local haloSize = 2.35
+    local haloRingSegments = 72
+    local haloRingWidth = 0.055
     local function removeHalo()
         for _, obj in ipairs(haloParts) do if obj and obj.Parent then obj:Destroy() end end
         table.clear(haloParts)
@@ -4224,13 +4258,10 @@ end)()
     end
     local function updateHaloGeometry()
         if not haloHead or not haloHead.Parent then return end
+        local radius = haloSize * 0.68
+        local y = haloHead.Size.Y * 0.64
         for _, rec in ipairs(haloSegmentRecords) do
-            local radius = haloSize * rec.radiusFactor
-            local angle = rec.angle
-            local localCF = CFrame.new(math.cos(angle) * radius, rec.y, math.sin(angle) * radius)
-            rec.part.Size = Vector3.new(rec.dotSize, rec.dotSize, rec.dotSize)
-            rec.part.CFrame = haloHead.CFrame * localCF
-            rec.weld.C0 = localCF
+            rec.attachment.Position = Vector3.new(math.cos(rec.angle) * radius, y, math.sin(rec.angle) * radius)
         end
     end
     local function addHalo(character)
@@ -4239,47 +4270,43 @@ end)()
         local head = character and character:FindFirstChild("Head")
         if not head then return end
         haloHead = head
-        local specs = {
-            -- The radius is large compared with the bead size, keeping the centre visibly hollow.
-            {radiusFactor = 0.68, y = head.Size.Y * 0.64, alpha = 0.04, dotSize = 0.16, count = 64},
-            {radiusFactor = 0.49, y = head.Size.Y * 0.59, alpha = 0.48, dotSize = 0.105, count = 48},
-        }
-        for _, spec in ipairs(specs) do
-            for index = 1, spec.count do
-                local angle = (index - 1) * (math.pi * 2 / spec.count)
-                local part = Instance.new("Part")
-                part.Name = "TrueSightHaloBead"
-                part.Shape = Enum.PartType.Ball
-                part.Size = Vector3.new(spec.dotSize, spec.dotSize, spec.dotSize)
-                part.Material = Enum.Material.Neon
-                part.Color = accent
-                part.Transparency = spec.alpha
-                part.CanCollide = false
-                part.CanTouch = false
-                part.CanQuery = false
-                part.CastShadow = false
-                part.Massless = true
-                part.Anchored = false
-                local localCF = CFrame.new(math.cos(angle) * haloSize * spec.radiusFactor, spec.y, math.sin(angle) * haloSize * spec.radiusFactor)
-                part.CFrame = head.CFrame * localCF
-                local weld = Instance.new("Weld")
-                weld.Name = "TrueSightHaloWeld"
-                weld.Part0 = head
-                weld.Part1 = part
-                weld.C0 = localCF
-                weld.C1 = CFrame.new()
-                weld.Parent = part
-                part.Parent = character
-                table.insert(haloParts, part)
-                table.insert(haloSegmentRecords, {
-                    part = part, weld = weld, angle = angle, radiusFactor = spec.radiusFactor,
-                    y = spec.y, dotSize = spec.dotSize, segmentCount = spec.count,
-                })
-            end
+        local attachments = {}
+        local radius = haloSize * 0.68
+        local y = head.Size.Y * 0.64
+        for index = 1, haloRingSegments do
+            local angle = (index - 1) * (math.pi * 2 / haloRingSegments)
+            local attachment = Instance.new("Attachment")
+            attachment.Name = "TrueSightHaloPoint"
+            attachment.Position = Vector3.new(math.cos(angle) * radius, y, math.sin(angle) * radius)
+            attachment.Parent = head
+            table.insert(attachments, attachment)
+            table.insert(haloParts, attachment)
+            table.insert(haloSegmentRecords, {attachment = attachment, angle = angle})
+        end
+        for index = 1, haloRingSegments do
+            local nextIndex = (index % haloRingSegments) + 1
+            local beam = Instance.new("Beam")
+            beam.Name = "TrueSightHaloSegment"
+            beam.Attachment0 = attachments[index]
+            beam.Attachment1 = attachments[nextIndex]
+            beam.Width0 = haloRingWidth
+            beam.Width1 = haloRingWidth
+            beam.FaceCamera = true
+            beam.LightEmission = 1
+            beam.LightInfluence = 0
+            beam.Color = ColorSequence.new(accent)
+            beam.Transparency = NumberSequence.new(0.06)
+            beam.Segments = 1
+            beam.Parent = head
+            table.insert(haloParts, 1, beam)
         end
         updateHaloGeometry()
     end
-    onAccent(function(c) for _, obj in ipairs(haloParts) do if obj and obj.Parent then obj.Color = c end end end)
+    onAccent(function(c)
+        for _, obj in ipairs(haloParts) do
+            if obj and obj.Parent and obj:IsA("Beam") then obj.Color = ColorSequence.new(c) end
+        end
+    end)
     local haloMod = addModule(visualPanel, "Neon Halo", function(on)
         if on then addHalo(player.Character) else removeHalo() end
     end)
@@ -5441,7 +5468,7 @@ end)()
 -- WORLD
 -- Keep world-module locals in a separate function scope to stay below Luau's
 -- per-function local-register limit. Return a cleanup closure for the mood FX.
-local cleanupWorldMood = (function()
+modules.cleanupWorldMood = (function()
 local worldPanel = makePanel("World", 428)
 
 local cleanupWorldMoodInternal = (function()
@@ -6833,7 +6860,7 @@ local clientPanel = makePanel("Client", 628)
             -- time to settle before sending LearnSkill. Startup still uses a short wait.
             local reasonText = string.lower(tostring(reason or ""))
             local afterReset = string.find(reasonText, "reset", 1, true) ~= nil
-            task.wait(afterReset and 2.0 or 0.30)
+            task.wait(afterReset and 1.35 or 0.18)
 
             local remote, remotePathOrError = getCharacterSkillRemote()
             local resultLines = {}
@@ -6876,7 +6903,7 @@ local clientPanel = makePanel("Client", 628)
                     -- Leave time for each prerequisite to replicate before the next
                     -- node is requested. This is only four calls, so reliability is
                     -- more useful than shaving a few tenths of a second here.
-                    task.wait(0.55)
+                    task.wait(0.30)
                 end
             end
 
@@ -7462,7 +7489,7 @@ modules._unloadCleanup = function()
     if visualModules.stopBlackFlash then pcall(visualModules.stopBlackFlash) end
     if nameTagLoop then nameTagLoop:Disconnect() nameTagLoop = nil end
     for plr in pairs(nameTagObjects) do removeNameTag(plr) end
-    if cleanupWorldMood then pcall(cleanupWorldMood) end
+    if modules.cleanupWorldMood then pcall(modules.cleanupWorldMood) end
     if renderState.correction then renderState.correction:Destroy() end
     if renderState.blur then renderState.blur:Destroy() end
     if renderState.bloomCreated then
@@ -7944,19 +7971,7 @@ profileInput = addTextInput(configPanel, "Config Profile",
         end
     end)
 profileInput.LayoutOrder = 3
-local saveProfileBtn
-saveProfileBtn = addAction(configPanel, "Save Profile", function()
-    local profile = normalizeProfileName(profileInput.Text)
-    if profile == "" then
-        flash(saveProfileBtn, "Enter a profile name", "Save Profile")
-    elseif saveConfig(profile) then
-        flash(saveProfileBtn, "Saved " .. profile, "Save Profile")
-        notifyConfig("Config saved (" .. profile .. ")", false)
-    else
-        flash(saveProfileBtn, "Save failed", "Save Profile")
-    end
-end)
-saveProfileBtn.LayoutOrder = 4
+-- Save Profile button removed: Save Config writes the currently selected profile.
 local loadProfileBtn
 loadProfileBtn = addAction(configPanel, "Load Profile", function()
     local profile = normalizeProfileName(profileInput.Text)
