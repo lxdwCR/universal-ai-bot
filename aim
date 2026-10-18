@@ -31,6 +31,12 @@ local player = Players.LocalPlayer
 local function cam() return workspace.CurrentCamera end
 
 do
+    pcall(function()
+        local env = type(getgenv) == "function" and getgenv() or _G
+        local previousCleanup = env.__TrueSightV4PerformanceCleanup
+        if type(previousCleanup) == "function" then previousCleanup() end
+        env.__TrueSightV4PerformanceCleanup = nil
+    end)
     local pg = player:WaitForChild("PlayerGui")
     local old = pg:FindFirstChild("TrueSight")
     if old then old:Destroy() end
@@ -210,7 +216,7 @@ end)
 ------------------------------------------------------------------
 local trailObjects = {}
 local activeTrail
-local trailLifetime = 0.65
+local trailLifetime = 0.42
 local trailStyle = 1
 local trailStyleNames = {"Ribbon", "Lightning", "Flower", "Comet", "Prism", "Plasma"}
 
@@ -242,10 +248,12 @@ local function addTrail(character)
     local trail = Instance.new("Trail")
     trail.Attachment0 = a0
     trail.Attachment1 = a1
-    trail.Lifetime = trailLifetime
-    trail.MinLength = 0.1
-    trail.FaceCamera = true
-    trail.LightEmission = 0.8
+    local trailQuality = modules._trailQuality or 1
+    local lifetimeCap = trailQuality == 1 and 0.42 or (trailQuality == 2 and 0.72 or 1.2)
+    trail.Lifetime = math.min(trailLifetime, lifetimeCap)
+    trail.MinLength = trailQuality == 1 and 0.24 or (trailQuality == 2 and 0.14 or 0.08)
+    trail.FaceCamera = false
+    trail.LightEmission = trailQuality == 1 and 0.22 or (trailQuality == 2 and 0.45 or 0.7)
     trail.Color = trailColor(accent)
     if trailStyle == 2 then
         trail.WidthScale = NumberSequence.new({
@@ -304,8 +312,11 @@ local function addTrail(character)
         trail.WidthScale = NumberSequence.new(1)
         trail.Texture = ""
     end
+    if trailQuality == 1 then
+        trail.Texture = ""
+    end
     trail.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.15),
+        NumberSequenceKeypoint.new(0, 0.2),
         NumberSequenceKeypoint.new(1, 1),
     })
     trail.Parent = root
@@ -399,10 +410,16 @@ local function addWings(character)
         end
     end
 
-    wingConn = RunService.Heartbeat:Connect(function()
+    local wingAccumulator = 0
+    wingConn = RunService.Heartbeat:Connect(function(dt)
+        wingAccumulator += dt
+        if wingAccumulator < 1 / 30 then return end
+        wingAccumulator = wingAccumulator % (1 / 30)
         local flap = math.sin(os.clock() * wingSpeed) * math.rad(14)
         for _, w in ipairs(wingPivots) do
-            w.weld.C0 = pivotCFrame(w.side, flap)
+            if w.weld and w.weld.Parent then
+                w.weld.C0 = pivotCFrame(w.side, flap)
+            end
         end
     end)
 end
@@ -416,7 +433,7 @@ end)
 ------------------------------------------------------------------
 local auraObjects = {}
 local auraEmitter
-local auraRate = 22
+local auraRate = 16
 local auraStyle = 1
 local auraStyles = {
     {name = "Sparkles", texture = "rbxasset://textures/particles/sparkles_main.dds",
@@ -1155,7 +1172,11 @@ local function addVerity()
     model.Parent = workspace
     verityModel, verityBody = model, body
 
-    verityConn = RunService.Heartbeat:Connect(function()
+    local verityAccumulator = 0
+    verityConn = RunService.Heartbeat:Connect(function(dt)
+        verityAccumulator += dt
+        if verityAccumulator < 1 / 30 then return end
+        verityAccumulator = verityAccumulator % (1 / 30)
         local character = player.Character
         local root = character and character:FindFirstChild("HumanoidRootPart")
         if not root or not verityBody or not verityBody.Parent then return end
@@ -1194,6 +1215,7 @@ local ghostPos = {}
 local ghostPing = 0
 local ghostLabelOn = true
 local ghostLastUi = 0
+local ghostRefreshRate = 60
 local ghostAvatar = {
     source = nil,
     clone = nil,
@@ -1272,21 +1294,35 @@ local function buildGhostAvatar(character)
 
     for _, sourcePart in ipairs(character:GetDescendants()) do
         if sourcePart:IsA("BasePart") then
-            local ghostPart = ghostByPath[relativePath(character, sourcePart)]
+            local path = relativePath(character, sourcePart)
+            local ghostPart = ghostByPath[path]
+            local lowerPartName = string.lower(sourcePart.Name)
+            local hideAsProxy = sourcePart.Name == "HumanoidRootPart"
+                or string.find(lowerPartName, "hitbox", 1, true) ~= nil
+                or string.find(lowerPartName, "hurtbox", 1, true) ~= nil
+                or string.find(lowerPartName, "collider", 1, true) ~= nil
+                or string.find(lowerPartName, "collision", 1, true) ~= nil
+                or sourcePart.Transparency >= 0.95
+                or sourcePart.LocalTransparencyModifier >= 0.95
             if ghostPart and ghostPart:IsA("BasePart") then
-                ghostPart.Anchored = true
-                ghostPart.CanCollide = false
-                ghostPart.CanTouch = false
-                ghostPart.CanQuery = false
-                ghostPart.CastShadow = false
-                ghostPart.LocalTransparencyModifier = 0
-                ghostPart.Material = Enum.Material.ForceField
-                ghostPart.Color = accent
-                ghostPart.Transparency = (ghostAvatar.style == 2) and 1 or 0.32
-                table.insert(ghostAvatar.parts, {
-                    source = sourcePart,
-                    ghost = ghostPart,
-                })
+                if hideAsProxy then
+                    -- Keep invisible roots and hitboxes invisible in the clone too.
+                    ghostPart:Destroy()
+                else
+                    ghostPart.Anchored = true
+                    ghostPart.CanCollide = false
+                    ghostPart.CanTouch = false
+                    ghostPart.CanQuery = false
+                    ghostPart.CastShadow = false
+                    ghostPart.LocalTransparencyModifier = 0
+                    ghostPart.Material = Enum.Material.ForceField
+                    ghostPart.Color = accent
+                    ghostPart.Transparency = (ghostAvatar.style == 2) and 1 or 0.32
+                    table.insert(ghostAvatar.parts, {
+                        source = sourcePart,
+                        ghost = ghostPart,
+                    })
+                end
             end
         end
     end
@@ -1381,7 +1417,12 @@ local function addGhost()
     ghostPing = getPing()
     if player.Character then buildGhostAvatar(player.Character) end
 
-    ghostConn = RunService.Heartbeat:Connect(function()
+    ghostAvatar.updateAccumulator = 0
+    ghostConn = RunService.Heartbeat:Connect(function(dt)
+        ghostAvatar.updateAccumulator = (ghostAvatar.updateAccumulator or 0) + dt
+        local refreshInterval = 1 / math.clamp(ghostRefreshRate, 10, 60)
+        if ghostAvatar.updateAccumulator < refreshInterval then return end
+        ghostAvatar.updateAccumulator = ghostAvatar.updateAccumulator % refreshInterval
         local now = os.clock()
         local ch = player.Character
         local root = ch and ch:FindFirstChild("HumanoidRootPart")
@@ -2575,13 +2616,17 @@ local menuFxController = (function()
     table.insert(connections, RunService.RenderStepped:Connect(function(dt)
         if not enabled or not layer.Visible or not clickGui.Visible then return end
         local now = os.clock()
+        local elapsed = now - lastFrame
+        if elapsed < 1 / 30 then return end
+        local frameDelta = math.min(elapsed, 0.08)
+        lastFrame = now
         local viewport = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
         local mouse = UserInputService:GetMouseLocation()
         local targetMouse = Vector2.new(
             math.clamp(mouse.X / math.max(1, viewport.X), 0, 1),
             math.clamp(mouse.Y / math.max(1, viewport.Y), 0, 1)
         )
-        smoothMouse = smoothMouse:Lerp(targetMouse, math.clamp(dt * 5.5, 0, 1))
+        smoothMouse = smoothMouse:Lerp(targetMouse, math.clamp(frameDelta * 5.5, 0, 1))
         if cursorGlowParts then
             for _, glow in ipairs(cursorGlowParts) do
                 if glow.frame and glow.frame.Parent then
@@ -2594,9 +2639,7 @@ local menuFxController = (function()
             end
         end
         backdropGradient.Rotation = 18 + (smoothMouse.X - 0.5) * cursorStrength * 8
-        if now - lastFrame < 1 / 30 then return end
-        local step = math.min(dt, 0.08) * motionSpeed
-        lastFrame = now
+        local step = frameDelta * motionSpeed
         local parallaxX = (smoothMouse.X - 0.5) * cursorStrength * 0.035
         local parallaxY = (smoothMouse.Y - 0.5) * cursorStrength * 0.035
         for _, p in ipairs(pieces) do
@@ -3022,7 +3065,10 @@ local uiInteraction = (function()
         if not inPopup and not inOwner then closeDropdown() end
     end))
 
-    table.insert(connections, RunService.RenderStepped:Connect(function()
+    table.insert(connections, RunService.RenderStepped:Connect(function(dt)
+        state.gripAccumulator = (state.gripAccumulator or 0) + dt
+        if state.gripAccumulator < 1 / 15 then return end
+        state.gripAccumulator = state.gripAccumulator % (1 / 15)
         for i = #state.grips, 1, -1 do
             local entry = state.grips[i]
             local target, grip = entry.target, entry.grip
@@ -3654,7 +3700,7 @@ auraMod.cycle("Style", {"Sparkles", "Embers", "Soft Glow", "Smoke Drift", "Prism
     auraStyle = i
     if auraMod.enabled and player.Character then addAura(player.Character) end
 end)
-auraMod.slider("Density", 5, 60, 22, 1, function(v)
+auraMod.slider("Density", 5, 60, 16, 1, function(v)
     auraRate = v
     if auraEmitter then auraEmitter.Rate = v end
 end)
@@ -3707,9 +3753,17 @@ local trailMod = addModule(visualPanel, "Player Trails", function(on)
         removeTrail()
     end
 end)
-trailMod.slider("Length", 0.2, 2, 0.65, 0.05, function(v)
+trailMod.slider("Length", 0.2, 2, 0.42, 0.05, function(v)
     trailLifetime = v
-    if activeTrail then activeTrail.Lifetime = v end
+    if activeTrail then
+        local quality = modules._trailQuality or 1
+        local cap = quality == 1 and 0.42 or (quality == 2 and 0.72 or 1.2)
+        activeTrail.Lifetime = math.min(v, cap)
+    end
+end)
+trailMod.cycle("Quality", {"Performance", "Balanced", "Visual"}, modules._trailQuality or 1, function(i)
+    modules._trailQuality = i
+    if trailMod.enabled and player.Character then addTrail(player.Character) end
 end)
 trailMod.cycle("Style", trailStyleNames, trailStyle, function(i)
     trailStyle = i
@@ -3736,7 +3790,7 @@ end)
 ghostMod.cycle("Style", {"Chams", "Box", "Both"}, 1, function(i)
     ghostAvatar.style = i
     if ghostAvatar.highlight then
-        ghostAvatar.highlight.Enabled = i ~= 2
+        ghostAvatar.highlight.Enabled = (i == 1 or i == 3)
     end
     if ghostBox then
         ghostBox.Visible = (i == 2 or i == 3)
@@ -3752,6 +3806,9 @@ end)
 ghostMod.cycle("Label", {"On", "Off"}, 1, function(i)
     ghostLabelOn = (i == 1)
     if ghostGui then ghostGui.Enabled = ghostLabelOn end
+end)
+ghostMod.slider("Refresh Rate", 10, 60, ghostRefreshRate, 5, function(v)
+    ghostRefreshRate = math.clamp(v, 10, 60)
 end)
 
 visualModules.hat = hatMod
@@ -3775,6 +3832,7 @@ end)()
     -- YBA cosmetic picker.
     ------------------------------------------------------------------
     local cosmeticCandidates = {}
+    local cosmeticPartRoots = {}
     local cosmeticNames = {"None"}
     local selectedCosmeticIndex = 1
     local activeCosmetic
@@ -3795,7 +3853,7 @@ end)()
     local blackFlashVolume = 0.8
     local blackFlashCooldown = 1.2
     local blackFlashLastTrigger = 0
-    local blackFlashParticleCount = 42
+    local blackFlashParticleCount = 30
 
     local function lower(value)
         return string.lower(tostring(value or ""))
@@ -3829,11 +3887,7 @@ end)()
     end
 
     local function hasBasePart(root)
-        if root:IsA("BasePart") then return true end
-        for _, child in ipairs(root:GetDescendants()) do
-            if child:IsA("BasePart") then return true end
-        end
-        return false
+        return root:IsA("BasePart") or cosmeticPartRoots[root] == true
     end
 
     local function hasNestedAccessory(model)
@@ -3855,6 +3909,7 @@ end)()
 
     local function scanReplicatedCosmetics()
         table.clear(cosmeticCandidates)
+        table.clear(cosmeticPartRoots)
         table.clear(cosmeticNames)
         table.clear(blackFlashAssets)
         table.clear(blackFlashNames)
@@ -3866,10 +3921,23 @@ end)()
             return 0
         end
 
+        -- Build a one-pass map of every ancestor that contains a BasePart.
+        -- This avoids calling GetDescendants again for each candidate model.
+        for scanIndex, inst in ipairs(descendants) do
+            if inst:IsA("BasePart") then
+                local ancestor = inst
+                while ancestor and ancestor ~= ReplicatedStorage do
+                    cosmeticPartRoots[ancestor] = true
+                    ancestor = ancestor.Parent
+                end
+            end
+            if scanIndex % 900 == 0 then task.wait() end
+        end
+
         local seen = {}
         local blackFlashSeen = {}
         for scanIndex, inst in ipairs(descendants) do
-            if scanIndex % 450 == 0 then task.wait() end
+            if scanIndex % 700 == 0 then task.wait() end
 
             local norm = lower(inst.Name):gsub("[^%w]", "")
             if string.find(norm, "blackflash", 1, true) then
@@ -4820,8 +4888,8 @@ end)()
         keepConnection(RunService.Heartbeat:Connect(function(dt)
             if not blackFlashMod or not blackFlashMod.enabled then return end
             healthPollAccumulator += dt
-            if healthPollAccumulator < 0.125 then return end
-            healthPollAccumulator = 0
+            if healthPollAccumulator < 0.2 then return end
+            healthPollAccumulator = healthPollAccumulator % 0.2
             local candidates = {}
             local living = workspace:FindFirstChild("Living")
             if living then
@@ -5059,6 +5127,7 @@ end)()
 
     visualModules.replicatedCosmetic = cosmeticHatMod
     visualModules.applyReplicatedCosmetic = applySelectedCosmetic
+    visualModules.assetScansReady = false
 
     task.spawn(function()
         task.wait(0.25)
@@ -5091,10 +5160,14 @@ end)()
             end
             cosmeticScanBusy = false
         end
+        visualModules.assetScansReady = true
+    end)
+    task.delay(5, function()
+        if visualModules.assetScansReady ~= true then visualModules.assetScansReady = true end
     end)
 end)()
 
-local renderState = (function()
+modules.renderState = (function()
 local renderPanel = makePanel("Render", 228)
 
 local fovValue = math.floor(oldFOV + 0.5)
@@ -5599,25 +5672,18 @@ end)
 
 local timeValue = 14
 local timeBefore = Lighting.ClockTime
-local timeConn
 local timeMod = addModule(worldPanel, "Time Changer", function(on)
-    if timeConn then
-        timeConn:Disconnect()
-        timeConn = nil
-    end
     if on then
         timeBefore = Lighting.ClockTime
         Lighting.ClockTime = timeValue
-        timeConn = RunService.Heartbeat:Connect(function()
-            if math.abs(Lighting.ClockTime - timeValue) > 0.01 then
-                Lighting.ClockTime = timeValue
-            end
-        end)
     else
         Lighting.ClockTime = timeBefore
     end
 end)
-timeMod.slider("Hour", 0, 23.5, 14, 0.5, function(v) timeValue = v end)
+timeMod.slider("Hour", 0, 23.5, 14, 0.5, function(v)
+    timeValue = v
+    if timeMod.enabled then Lighting.ClockTime = timeValue end
+end)
 timeMod.cycle("Preset", {"Morning", "Noon", "Sunset", "Night"}, 2, function(i)
     local presetHours = {8, 12, 18, 0}
     timeValue = presetHours[i]
@@ -5762,85 +5828,133 @@ local function setNameTags(on)
         return
     end
     for _, plr in ipairs(Players:GetPlayers()) do createNameTag(plr) end
-    nameTagLoop = RunService.Heartbeat:Connect(function()
+
+    -- Cache expensive Stand-name lookups on each tag instead of walking all
+    -- descendants every frame.
+    local function resolveStandName(plr, character, tag, now)
+        local cached = tag:GetAttribute("TS_StandNameCache")
+        local cacheUntil = tag:GetAttribute("TS_StandNameCacheUntil") or 0
+        if type(cached) == "string" and now < cacheUntil then
+            return cached
+        end
+
+        local standName
+        local standKeys = {"StandName", "Stand", "CurrentStand", "StandType"}
+        for _, key in ipairs(standKeys) do
+            local ok, value = pcall(function() return plr:GetAttribute(key) end)
+            if ok then standName = normalizeStandCandidate(value) end
+            if not standName then
+                ok, value = pcall(function() return character:GetAttribute(key) end)
+                if ok then standName = normalizeStandCandidate(value) end
+            end
+            if standName then break end
+        end
+
+        -- Cheap direct-child lookup comes before any descendant scan.
+        if not standName then
+            for _, obj in ipairs(character:GetChildren()) do
+                if obj:IsA("Model") and obj.Name ~= "" then
+                    local n = string.lower(obj.Name)
+                    if not string.find(n, "effect", 1, true)
+                        and not string.find(n, "hitbox", 1, true)
+                        and not string.find(n, "dummy", 1, true)
+                        and not string.find(n, "rig", 1, true)
+                        and not string.find(n, "vfx", 1, true) then
+                        standName = normalizeStandCandidate(obj.Name:gsub("[Ss]tand", ""))
+                            or normalizeStandCandidate(obj.Name)
+                        if standName then break end
+                    end
+                end
+            end
+        end
+
+        if not standName then
+            for _, container in ipairs({plr, character}) do
+                for _, obj in ipairs(container:GetDescendants()) do
+                    if obj:IsA("StringValue") or obj:IsA("ObjectValue") then
+                        if string.find(string.lower(obj.Name), "stand", 1, true) then
+                            standName = normalizeStandCandidate(obj.Value)
+                            if standName then break end
+                        end
+                    end
+                end
+                if standName then break end
+            end
+        end
+
+        standName = standName or "Unknown"
+        tag:SetAttribute("TS_StandNameCache", standName)
+        -- Unknown names are the most expensive to rediscover; retry less often.
+        local refreshAfter = standName == "Unknown" and 12 or 4
+        refreshAfter += (tonumber(plr.UserId) or 0) % 6 * 0.15
+        tag:SetAttribute("TS_StandNameCacheUntil", now + refreshAfter)
+        return standName
+    end
+
+    local accumulated = 0
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local excludedCharacter = player.Character
+    rayParams.FilterDescendantsInstances = {excludedCharacter}
+
+    nameTagLoop = RunService.Heartbeat:Connect(function(dt)
+        accumulated += dt
+        if accumulated < 0.16 then return end -- update at roughly 6 Hz, not every frame
+        accumulated = 0
+
         local camera = cam()
         if not camera then return end
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = {player.Character}
+        if player.Character ~= excludedCharacter then
+            excludedCharacter = player.Character
+            rayParams.FilterDescendantsInstances = {excludedCharacter}
+        end
+        local now = os.clock()
+
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= player then
                 local character = plr.Character
                 local head = character and character:FindFirstChild("Head")
                 local hum = character and character:FindFirstChildOfClass("Humanoid")
                 local tag = nameTagObjects[plr]
+
                 if head then
                     if not tag or not tag.Parent then
                         createNameTag(plr)
                         tag = nameTagObjects[plr]
                     elseif tag.Adornee ~= head then
                         tag.Adornee = head
+                        tag:SetAttribute("TS_LOSAt", 0)
+                        tag:SetAttribute("TS_LOSVisible", true)
                     end
                 end
-                if head and hum and hum.Health > 0 then
-                    if tag then
-                        local point, onScreen = camera:WorldToViewportPoint(head.Position)
-                        local visible = onScreen and point.Z > 0
-                        if visible then
+
+                if head and hum and hum.Health > 0 and tag then
+                    local point, onScreen = camera:WorldToViewportPoint(head.Position)
+                    local visible = onScreen and point.Z > 0
+                    if visible then
+                        local lastLOS = tag:GetAttribute("TS_LOSAt") or 0
+                        if now - lastLOS >= 0.28 then
                             local direction = head.Position - camera.CFrame.Position
-                            local hit = workspace:Raycast(camera.CFrame.Position, direction, params)
-                            visible = (not hit) or hit.Instance:IsDescendantOf(character)
+                            local hit = workspace:Raycast(camera.CFrame.Position, direction, rayParams)
+                            local lineVisible = (not hit) or hit.Instance:IsDescendantOf(character)
+                            tag:SetAttribute("TS_LOSVisible", lineVisible)
+                            tag:SetAttribute("TS_LOSAt", now)
                         end
-                        tag.Enabled = visible
-                        if visible then
-                            local standName = nil
-                            local standKeys = {"StandName", "Stand", "CurrentStand", "StandType"}
-                            for _, key in ipairs(standKeys) do
-                                local ok, value = pcall(function() return plr:GetAttribute(key) end)
-                                if ok then standName = normalizeStandCandidate(value) end
-                                if not standName then
-                                    ok, value = pcall(function() return character:GetAttribute(key) end)
-                                    if ok then standName = normalizeStandCandidate(value) end
-                                end
-                                if standName then break end
-                            end
-                            if not standName then
-                                for _, container in ipairs({plr, character}) do
-                                    for _, obj in ipairs(container:GetDescendants()) do
-                                        if (obj:IsA("StringValue") or obj:IsA("ObjectValue")) then
-                                            local n = string.lower(obj.Name)
-                                            if string.find(n, "stand", 1, true) then
-                                                local candidate = normalizeStandCandidate(obj.Value)
-                                                if candidate then standName = candidate break end
-                                            end
-                                        end
-                                    end
-                                    if standName then break end
-                                end
-                            end
-                            if not standName then
-                                for _, obj in ipairs(character:GetChildren()) do
-                                    if obj:IsA("Model") and obj.Name ~= "" then
-                                        local n = string.lower(obj.Name)
-                                        if not string.find(n, "effect", 1, true)
-                                            and not string.find(n, "hitbox", 1, true)
-                                            and not string.find(n, "dummy", 1, true)
-                                            and not string.find(n, "rig", 1, true)
-                                            and not string.find(n, "vfx", 1, true) then
-                                            local candidate = normalizeStandCandidate(obj.Name:gsub("[Ss]tand", ""))
-                                            if not candidate then candidate = normalizeStandCandidate(obj.Name) end
-                                            if candidate then standName = candidate break end
-                                        end
-                                    end
-                                end
-                            end
-                            standName = standName or "Unknown"
-                            tag.Label.TextColor3 = accent
-                            tag.Label.Text = string.format(
+                        visible = visible and tag:GetAttribute("TS_LOSVisible") ~= false
+                    end
+                    tag.Enabled = visible
+
+                    if visible then
+                        local standName = resolveStandName(plr, character, tag, now)
+                        local label = tag:FindFirstChild("Label")
+                        if label then
+                            if label.TextColor3 ~= accent then label.TextColor3 = accent end
+                            local textNow = string.format(
                                 '<font color="#%s">%s</font>  <font color="#FFFFFF">HP %d/%d</font>\n<font color="#B8C8D8">Stand: %s</font>',
                                 accent:ToHex(), plr.DisplayName,
                                 math.floor(hum.Health + 0.5), math.floor(hum.MaxHealth + 0.5),
                                 tostring(standName):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+                            if label.Text ~= textNow then label.Text = textNow end
                         end
                     end
                 elseif tag then
@@ -5958,9 +6072,19 @@ local function truthyStunValue(value)
     return false
 end
 
+local stunTimingCache = {character = nil, nextUpdate = 0, sampledAt = 0, remaining = nil, duration = nil}
 local function getStunTimingSignals()
     local character = player.Character
-    if not character then return nil, nil end
+    if not character then
+        stunTimingCache.character = nil
+        return nil, nil
+    end
+    local now = os.clock()
+    if stunTimingCache.character == character and now < stunTimingCache.nextUpdate then
+        local left = stunTimingCache.remaining
+        if left then left = math.max(0, left - (now - stunTimingCache.sampledAt)) end
+        return left, stunTimingCache.duration
+    end
     local remaining, duration
     local function consider(name, value)
         local key = string.lower(tostring(name)):gsub("[^%w]", "")
@@ -6014,6 +6138,11 @@ local function getStunTimingSignals()
         end
         inspect(obj)
     end
+    stunTimingCache.character = character
+    stunTimingCache.sampledAt = now
+    stunTimingCache.nextUpdate = now + 0.22
+    stunTimingCache.remaining = remaining
+    stunTimingCache.duration = duration
     return remaining, duration
 end
 
@@ -6029,11 +6158,13 @@ local function isActiveStunKey(name)
     return true
 end
 
+local stunAttributeKeys = {"Stunned", "Stun", "IsStunned", "HitStun", "Hitstun", "InStun", "stunned", "stun"}
+local stunDescendantCache = {character = nil, expires = 0, stunned = false, reason = "not detected"}
 local function isLocallyStunned()
     local character = player.Character
     if not character then return false, "no character" end
     local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local keys = {"Stunned", "Stun", "IsStunned", "HitStun", "Hitstun", "InStun", "stunned", "stun"}
+    local keys = stunAttributeKeys
     local function checkAttributes(instance)
         for _, key in ipairs(keys) do
             local ok, value = pcall(function() return instance:GetAttribute(key) end)
@@ -6052,18 +6183,30 @@ local function isLocallyStunned()
     if checkAttributes(character) or checkAttributes(player) or (humanoid and checkAttributes(humanoid)) then
         return true, "stun flag"
     end
-    for _, obj in ipairs(character:GetDescendants()) do
-        local lower = string.lower(obj.Name)
-        if (obj:IsA("BoolValue") or obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("StringValue")) then
-            if isActiveStunKey(obj.Name) and truthyStunValue(obj.Value) then
-                return true, "stun value"
+    local now = os.clock()
+    if stunDescendantCache.character == character and now < stunDescendantCache.expires then
+        if stunDescendantCache.stunned then return true, stunDescendantCache.reason end
+    else
+        local found, reason = false, "not detected"
+        for _, obj in ipairs(character:GetDescendants()) do
+            local lowerName = string.lower(obj.Name)
+            if (obj:IsA("BoolValue") or obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("StringValue"))
+                and isActiveStunKey(obj.Name) and truthyStunValue(obj.Value) then
+                found, reason = true, "stun value"
+                break
+            end
+            if (obj:IsA("Folder") or obj:IsA("Model"))
+                and (lowerName == "stun" or lowerName == "stunned" or lowerName == "hitstun")
+                and #obj:GetChildren() > 0 then
+                found, reason = true, "stun container"
+                break
             end
         end
-        if obj:IsA("Folder") or obj:IsA("Model") then
-            if (lower == "stun" or lower == "stunned" or lower == "hitstun") and #obj:GetChildren() > 0 then
-                return true, "stun container"
-            end
-        end
+        stunDescendantCache.character = character
+        stunDescendantCache.expires = now + 0.12
+        stunDescendantCache.stunned = found
+        stunDescendantCache.reason = reason
+        if found then return true, reason end
     end
     if humanoid and humanoid.Health > 0 then
         local jumpDisabled = humanoid.UseJumpPower and humanoid.JumpPower <= 1 or (not humanoid.UseJumpPower and humanoid.JumpHeight <= 0.1)
@@ -6080,6 +6223,8 @@ stunTimerMod = addModule(hudPanel, "YBA Stun Timer", function(on)
     updateStunDisplay()
     stunStartedAt = nil
     predictedStunDuration = nil
+    stunTimingCache.character = nil
+    stunDescendantCache.character = nil
     if on then
         local elapsed = 0
         stunTimerConn = RunService.Heartbeat:Connect(function(dt)
@@ -6128,6 +6273,8 @@ stunTimerMod.cycle("Display", {"Screen GUI", "Above Head"}, 1, function(index)
     updateStunDisplay()
 end)
 table.insert(connections, player.CharacterAdded:Connect(function()
+    stunTimingCache.character = nil
+    stunDescendantCache.character = nil
     task.defer(updateStunDisplay)
 end))
 
@@ -6310,11 +6457,17 @@ local clientPanel = makePanel("Client", 628)
         return n == "" or n == "none" or n == "nil" or n == "0" or n == "unknown"
     end
 
+    local previewScoreCache = setmetatable({}, {__mode = "k"})
     local function previewVisiblePartScore(model)
         if not model then return 0 end
+        local staticModel = model:IsDescendantOf(ReplicatedStorage)
+        if staticModel and previewScoreCache[model] ~= nil then return previewScoreCache[model] end
         local score = 0
         local ok, descendants = pcall(function() return model:GetDescendants() end)
-        if not ok then return 0 end
+        if not ok then
+            if staticModel then previewScoreCache[model] = 0 end
+            return 0
+        end
         for _, obj in ipairs(descendants) do
             if obj:IsA("BasePart") then
                 local name = string.lower(obj.Name)
@@ -6329,17 +6482,28 @@ local clientPanel = makePanel("Client", 628)
                 if not hidden and not big and not helperPart and minDimension >= 0 then score += 1 end
             end
         end
-        if score == 0 then return 0 end
+        if score == 0 then
+            if staticModel then previewScoreCache[model] = 0 end
+            return 0
+        end
 
         local boundsOk, _, bounds = pcall(function()
             local cf, size = model:GetBoundingBox()
             return cf, size
         end)
-        if not boundsOk or not bounds then return 0 end
+        if not boundsOk or not bounds then
+            if staticModel then previewScoreCache[model] = 0 end
+            return 0
+        end
         local dimensionsGood = bounds.X >= 0.45 and bounds.Y >= 1.45 and bounds.Z >= 0.35
         local oneMeshStand = score == 1 and bounds.X >= 1.0 and bounds.Y >= 2.0 and bounds.Z >= 0.55
-        if not dimensionsGood and not oneMeshStand then return 0 end
-        return score + math.min(bounds.Y, 12) * 1.5 + math.min(bounds.X * bounds.Z, 8)
+        if not dimensionsGood and not oneMeshStand then
+            if staticModel then previewScoreCache[model] = 0 end
+            return 0
+        end
+        local finalScore = score + math.min(bounds.Y, 12) * 1.5 + math.min(bounds.X * bounds.Z, 8)
+        if staticModel then previewScoreCache[model] = finalScore end
+        return finalScore
     end
 
     local function getStandModelWithin(container, targetName, allowContainerModel)
@@ -6949,8 +7113,8 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
 
     sprintConn = RunService.Heartbeat:Connect(function(dt)
         elapsed += dt
-        if elapsed < 0.025 then return end
-        elapsed = 0
+        if elapsed < 0.05 then return end
+        elapsed = elapsed % 0.05
 
         local character = player.Character
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -7908,26 +8072,37 @@ modules._unloadCleanup = function()
     if nameTagLoop then nameTagLoop:Disconnect() nameTagLoop = nil end
     for plr in pairs(nameTagObjects) do removeNameTag(plr) end
     if modules.cleanupWorldMood then pcall(modules.cleanupWorldMood) end
-    if renderState.correction then renderState.correction:Destroy() end
-    if renderState.blur then renderState.blur:Destroy() end
-    if renderState.bloomCreated then
-        renderState.bloom:Destroy()
-    elseif renderState.bloomOriginal and renderState.bloom.Parent then
-        renderState.bloom.Enabled = renderState.bloomOriginal.Enabled
-        renderState.bloom.Intensity = renderState.bloomOriginal.Intensity
-        renderState.bloom.Size = renderState.bloomOriginal.Size
-        renderState.bloom.Threshold = renderState.bloomOriginal.Threshold
+    if modules.renderState and modules.renderState.correction then modules.renderState.correction:Destroy() end
+    if modules.renderState and modules.renderState.blur then modules.renderState.blur:Destroy() end
+    if modules.renderState and modules.renderState.bloomCreated then
+        modules.renderState.bloom:Destroy()
+    elseif modules.renderState and modules.renderState.bloomOriginal and modules.renderState.bloom.Parent then
+        modules.renderState.bloom.Enabled = modules.renderState.bloomOriginal.Enabled
+        modules.renderState.bloom.Intensity = modules.renderState.bloomOriginal.Intensity
+        modules.renderState.bloom.Size = modules.renderState.bloomOriginal.Size
+        modules.renderState.bloom.Threshold = modules.renderState.bloomOriginal.Threshold
     end
-    if renderState.raysCreated then
-        renderState.rays:Destroy()
-    elseif renderState.raysOriginal and renderState.rays.Parent then
-        renderState.rays.Enabled = renderState.raysOriginal.Enabled
-        renderState.rays.Intensity = renderState.raysOriginal.Intensity
-        renderState.rays.Spread = renderState.raysOriginal.Spread
+    if modules.renderState and modules.renderState.raysCreated then
+        modules.renderState.rays:Destroy()
+    elseif modules.renderState and modules.renderState.raysOriginal and modules.renderState.rays.Parent then
+        modules.renderState.rays.Enabled = modules.renderState.raysOriginal.Enabled
+        modules.renderState.rays.Intensity = modules.renderState.raysOriginal.Intensity
+        modules.renderState.rays.Spread = modules.renderState.raysOriginal.Spread
     end
     fxGui:Destroy()
     gui:Destroy()
+    pcall(function()
+        local env = type(getgenv) == "function" and getgenv() or _G
+        if env.__TrueSightV4PerformanceCleanup == modules._unloadCleanup then
+            env.__TrueSightV4PerformanceCleanup = nil
+        end
+    end)
 end
+
+pcall(function()
+    local env = type(getgenv) == "function" and getgenv() or _G
+    env.__TrueSightV4PerformanceCleanup = modules._unloadCleanup
+end)
 
 ------------------------------------------------------------------
 -- Config saving (needs an executor with writefile / readfile)
@@ -8428,7 +8603,11 @@ addAction(clientPanel, "Unload Client", modules._unloadCleanup)
 
 if canFile then
     task.defer(function()
-        task.wait(0.8)
+        task.wait(0.35)
+        local scanWaitStart = os.clock()
+        while visualModules.assetScansReady ~= true and os.clock() - scanWaitStart < 4.5 do
+            task.wait(0.1)
+        end
 
         local startupProfile, selectedStamp, selectionSource = getAutoLoadSelection()
         local snapshot, snapshotProfile, snapshotStamp = readStartupSnapshot()
@@ -8451,12 +8630,12 @@ if canFile then
             if profileInput then profileInput.Text = startupProfile end
 
             local applyOk = applyConfig(data)
-            task.wait(0.35)
-            local secondApplyOk = applyConfig(data)
-            task.wait(0.5)
-            local thirdApplyOk = applyConfig(data)
+            if not applyOk then
+                task.wait(0.25)
+                applyOk = applyConfig(data)
+            end
 
-            if applyOk and secondApplyOk and thirdApplyOk then
+            if applyOk then
                 notifyConfig("Config auto-loaded: " .. startupProfile .. (loadedFromSnapshot and " (snapshot)" or ""), false)
                 print("[TrueSight] Startup config applied: " .. startupProfile
                     .. " (source=" .. tostring(loadedFromSnapshot and "snapshot" or "profile file")
