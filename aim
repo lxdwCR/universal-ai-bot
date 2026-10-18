@@ -1,6 +1,5 @@
 -- TRUESIGHT | client-side visual script
--- UI/FX maintenance build: startup-only asset discovery, stable dragging, opaque Stand preview, impact-position Black Flash.
--- Client-side visuals plus a small YBA Character Skill Tree helper.
+-- Visuals, camera controls, cosmetic effects and YBA helpers.
 --
 -- Controls:
 --   Left-click a module  = toggle it
@@ -9,6 +8,10 @@
 --   Menu key (default RightShift) = show/hide the menu (rebind it in the Client panel)
 --
 -- The "Color" setting changes the China Hat, Player Trails, Wings and the GUI accent together.
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
@@ -21,10 +24,12 @@ local HttpService = game:GetService("HttpService")
 local Stats = game:GetService("Stats")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+while not Players.LocalPlayer do
+    task.wait(0.1)
+end
 local player = Players.LocalPlayer
 local function cam() return workspace.CurrentCamera end
 
--- Remove leftovers from an earlier run of this script
 do
     local pg = player:WaitForChild("PlayerGui")
     local old = pg:FindFirstChild("TrueSight")
@@ -37,8 +42,18 @@ do
         end
     end
     pcall(function() RunService:UnbindFromRenderStep("TrueSightFOV") end)
+    pcall(function() RunService:UnbindFromRenderStep("TrueSightFreelook") end)
+    pcall(function() RunService:UnbindFromRenderStep("TrueSightShiftLockCentering") end)
+    pcall(function() game:GetService("ContextActionService"):UnbindAction("TrueSight_AutoSpecMoveTool") end)
+    pcall(function()
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        UserInputService.MouseIconEnabled = true
+    end)
 end
 
+while not workspace.CurrentCamera do
+    workspace:GetPropertyChangedSignal("CurrentCamera"):Wait()
+end
 local oldFOV = cam().FieldOfView
 local oldLighting = {
     Brightness = Lighting.Brightness,
@@ -307,7 +322,6 @@ end)
 
 ------------------------------------------------------------------
 -- Wings: 2 invisible pivots + 10 thin neon feathers, welded (no physics).
--- Only the 2 pivot welds are updated per frame to flap.
 ------------------------------------------------------------------
 local wingParts = {}
 local wingPivots = {}
@@ -496,9 +510,7 @@ onAccent(function(c)
 end)
 
 ------------------------------------------------------------------
--- Stand Aura: copy currently loaded YBA stand/skin VFX locally
--- This deliberately uses existing loaded effect instances instead of
--- recoloured placeholder particles. Scan after the desired aura is visible.
+-- Stand Aura: reuse available YBA stand and skin effects locally.
 ------------------------------------------------------------------
 local standAuraObjects = {}
 local standAuraRecords = {}
@@ -812,9 +824,6 @@ local function scanStandAuraSources()
     local standsFolder = ReplicatedStorage:FindFirstChild("Stands")
     local foundFromFolder = false
 
-    -- YBA stores the Stand/skin assets under ReplicatedStorage.Stands.
-    -- Treat each direct child as a source, so the selector can show the
-    -- actual stored asset name rather than a transient effect in Workspace.
     if standsFolder then
         for _, sourceRoot in ipairs(standsFolder:GetChildren()) do
             local descendants = {}
@@ -835,9 +844,6 @@ local function scanStandAuraSources()
                 end
             end
 
-            -- Prefer explicitly named aura branches. Some asset packs use
-            -- generic names, so fall back to enabled effects, then any stored
-            -- visual templates (including disabled emitters).
             local chosen = #auraMatches > 0 and auraMatches
                 or (#enabledFallback > 0 and enabledFallback or allVisualFallback)
             if #chosen > 0 then
@@ -866,8 +872,6 @@ local function scanStandAuraSources()
         end
     end
 
-    -- Compatibility fallback for effects already instantiated in the live
-    -- game, in case this game version keeps some skin effects out of the folder.
     if not foundFromFolder then
         local groups = {}
         local descendants = {}
@@ -952,7 +956,6 @@ local function groundCFrame(pos, normal)
     if normal.Y > 0.99 then
         return CFrame.new(pos)
     end
-    -- make the part's top face point along the surface normal
     return CFrame.lookAt(pos, pos + normal) * CFrame.Angles(-math.pi / 2, 0, 0)
 end
 
@@ -1179,9 +1182,7 @@ return {
 end)()
 
 ------------------------------------------------------------------
--- Desync tracker: an ESTIMATE of where the server currently sees you.
--- A LocalScript cannot read the server's real value, so this shows your
--- position as it was one network delay (ping / 2) ago.
+-- Desync tracker: estimate the server-visible position from recent movement.
 ------------------------------------------------------------------
 local ghostPart
 local ghostGui
@@ -1252,9 +1253,6 @@ local function buildGhostAvatar(character)
     clone.Name = "TrueSightDesyncChams"
     table.clear(ghostAvatar.parts)
 
-    -- Pair parts by their hierarchy path instead of child-array index. Child
-    -- ordering can differ in a character clone, which can make the ghost map
-    -- the wrong source parts and appear stuck or malformed.
     local function relativePath(root, inst)
         local names = {}
         local node = inst
@@ -1396,7 +1394,6 @@ local function addGhost()
         end
         part.Size = ghostAvatar.size
 
-        -- keep ~3 seconds of position history
         table.insert(ghostTimes, now)
         table.insert(ghostPos, root.CFrame)
         while #ghostTimes > 1 and ghostTimes[1] < now - 3 do
@@ -1404,7 +1401,6 @@ local function addGhost()
             table.remove(ghostPos, 1)
         end
 
-        -- where you were one network delay ago
         local target = now - ghostPing / 2000
         local est = root.CFrame
         for i = #ghostTimes, 1, -1 do
@@ -1418,8 +1414,6 @@ local function addGhost()
         end
 
         part.CFrame = est * CFrame.new(0, -0.35, 0)
-        -- Style 1 = Chams, 2 = Box only, 3 = Both.
-        -- The proxy box is outline-only and is never shown in Chams mode.
         box.Visible = (ghostAvatar.style == 2 or ghostAvatar.style == 3)
         if ghostAvatar.highlight then
             ghostAvatar.highlight.Enabled = (ghostAvatar.style == 1 or ghostAvatar.style == 3)
@@ -1457,7 +1451,6 @@ onAccent(function(c)
         ghostAvatar.highlight.FillColor = c
         ghostAvatar.highlight.OutlineColor = c
     end
-    -- Keep every cloned body/accessory part synced with the shared accent.
     for _, pair in ipairs(ghostAvatar.parts) do
         if pair.ghost and pair.ghost.Parent then
             pair.ghost.Color = c
@@ -1514,12 +1507,7 @@ local function setFog(on)
 end
 
 ------------------------------------------------------------------
--- Weather removal
--- Smart mode: silences emitters/sounds that look like weather (by name, or by
---   behaviour: heavy emitters that spray downward) plus terrain clouds.
--- Aggressive mode: silences EVERY particle emitter that isn't on a player.
--- "Silenced" = disabled, zero rate, zero lifetime and invisible, so scripts
--- that call :Emit() by hand can't bring the particles back either.
+-- Weather removal.
 ------------------------------------------------------------------
 local weatherWords = {
     "rain", "snow", "storm", "weather", "blizzard", "hail", "sleet",
@@ -1628,14 +1616,12 @@ local function setWeather(on)
     if on then
         local token = weatherToken
 
-        -- new objects (small delay so scripts can finish setting properties)
         weatherConn = workspace.DescendantAdded:Connect(function(inst)
             if inst:IsA("ParticleEmitter") or inst:IsA("Sound") then
                 task.delay(0.1, killWeather, inst)
             end
         end)
 
-        -- one-time scan, spread over several frames so it doesn't hitch
         task.spawn(function()
             local n = 0
             for _, d in ipairs(workspace:GetDescendants()) do
@@ -1708,8 +1694,6 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.DisplayOrder = 100
 gui.Parent = player:WaitForChild("PlayerGui")
 
--- Startup intro: kept inside a callback so it does not add locals to the main
--- chunk (important for executors that hit Luau's local-register limit).
 task.spawn(function()
     local introOk, introErr = pcall(function()
         local intro = Instance.new("Frame")
@@ -1828,7 +1812,6 @@ task.spawn(function()
         fillCorner.CornerRadius = UDim.new(1, 0)
         fillCorner.Parent = fill
 
-        -- Sounds live under the script's ScreenGui so they're local to this UI.
         local whoosh = Instance.new("Sound")
         whoosh.Name = "TrueSightIntroWhoosh"
         whoosh.SoundId = "rbxassetid://137081214744553"
@@ -1905,7 +1888,6 @@ task.spawn(function()
     end
 end)
 
--- Screen effects layer (sits under the menu)
 local fxGui = Instance.new("ScreenGui")
 fxGui.Name = "TrueSightFX"
 fxGui.ResetOnSpawn = false
@@ -1964,14 +1946,12 @@ local function setVignetteStrength(v)
     end
 end
 
--- edges are tinted with a very dark version of the accent color
 onAccent(function(c)
     for _, f in ipairs(vignetteFrames) do
         f.BackgroundColor3 = c:Lerp(Color3.new(0, 0, 0), 0.8)
     end
 end)
 
--- HUD: watermark
 local watermark = Instance.new("TextLabel")
 watermark.Name = "Watermark"
 watermark.Position = UDim2.fromOffset(8, 8)
@@ -1991,7 +1971,6 @@ onAccent(function(c)
     watermark.Text = '  True<font color="#' .. c:ToHex() .. '">Sight</font>  '
 end)
 
--- HUD: module list (top right)
 local arrayFrame = Instance.new("Frame")
 arrayFrame.Name = "ArrayList"
 arrayFrame.AnchorPoint = Vector2.new(1, 0)
@@ -2041,7 +2020,6 @@ local function refreshArray()
 end
 onAccent(function() refreshArray() end)
 
--- HUD stats: FPS counter + ping tracker (small panels under the watermark)
 local statsFrame = Instance.new("Frame")
 statsFrame.Name = "Stats"
 statsFrame.Position = UDim2.fromOffset(8, 40)
@@ -2210,7 +2188,6 @@ local pingStat = makeStat(2, "PING",
     end,
     150)
 
--- Click GUI root
 local clickGui = Instance.new("Frame")
 clickGui.Name = "ClickGui"
 clickGui.Size = UDim2.fromScale(1, 1)
@@ -2218,6 +2195,7 @@ clickGui.BackgroundColor3 = Color3.new(0, 0, 0)
 clickGui.BackgroundTransparency = 1
 clickGui.BorderSizePixel = 0
 clickGui.Active = false
+clickGui.Visible = false -- start hidden; press the configured menu key (RightShift by default) to open
 clickGui.Parent = gui
 
 local hint = Instance.new("TextLabel")
@@ -2230,7 +2208,6 @@ hint.TextSize = 13
 hint.TextColor3 = DIM
 hint.Parent = clickGui
 
--- Drag / slider state (handled by the global input events below)
 local dragTarget, dragStartMouse, dragStartPos
 local activeSlider
 local keyUiState = {
@@ -2243,7 +2220,6 @@ local keyUiState = {
 
 ------------------------------------------------------------------
 -- Smooth neon backdrop. One capped-rate animation loop drives every pattern.
--- Patterns are designed as subtle ambient glows rather than busy particles.
 ------------------------------------------------------------------
 local menuFxController = (function()
     local styleNames = {"Soft Glow", "Flowing Lines", "Glowing Hexagons", "Neon Dust", "Electric Veil", "Off"}
@@ -2380,8 +2356,6 @@ local menuFxController = (function()
     end
 
     local function addHex(x, y, size, phase, vx, vy)
-        -- Build the outline from six actual line segments instead of a Unicode
-        -- glyph. Font fallback can turn the glyph into a box/rectangle on some clients.
         local obj = Instance.new("Frame")
         obj.Name = "NeonHexagonOutline"
         obj.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -2420,8 +2394,6 @@ local menuFxController = (function()
     end
 
     local function addGlowRing(x, y, size, phase)
-        -- Separate outer bloom and crisp inner ring: avoids stacking multiple
-        -- UIStroke instances on one GuiObject, which varies across UI runtimes.
         local bloom = Instance.new("Frame")
         bloom.Name = "SoftGlowBloom"
         bloom.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -2519,7 +2491,6 @@ local menuFxController = (function()
                     (((i % 5) - 2) * 0.0035), (((i % 7) - 3) * 0.003))
             end
         elseif style == "Electric Veil" then
-            -- Smooth, wide ribbons with low-amplitude motion instead of sharp lightning bolts.
             for i = 1, math.max(7, math.floor(density * 0.48)) do
                 local x = ((i * 0.754877) + 0.08) % 1
                 local y = 0.12 + ((i * 0.569840) % 0.76)
@@ -2610,7 +2581,6 @@ local menuFxController = (function()
             math.clamp(mouse.X / math.max(1, viewport.X), 0, 1),
             math.clamp(mouse.Y / math.max(1, viewport.Y), 0, 1)
         )
-        -- Exponential easing keeps the glow responsive without jittering.
         smoothMouse = smoothMouse:Lerp(targetMouse, math.clamp(dt * 5.5, 0, 1))
         if cursorGlowParts then
             for _, glow in ipairs(cursorGlowParts) do
@@ -2690,7 +2660,6 @@ local menuFxController = (function()
     }
 end)()
 
--- Live palette controller for the UI chrome (world lighting and the shared accent are independent).
 local uiThemeController = (function()
     local names = {"Midnight", "Deep Ocean", "Graphite", "Violet Dusk", "Ice Terminal"}
     local palettes = {
@@ -2834,10 +2803,8 @@ local panelStatesByFrame = setmetatable({}, {__mode = "k"})
 local fallbackOrder = 0
 local panelColumns = {Visual = 1, Render = 2, World = 3, Client = 4, HUD = 5, Config = 6}
 local function responsivePanelWidth(viewportWidth)
-    -- Reserve a separate right-hand lane for the Stand preview. At wide resolutions
-    -- the module panels retain their full width and the extra space becomes breathing room.
     local minimum = viewportWidth >= 1120 and 132 or 108
-    return math.floor(math.clamp((viewportWidth - 36 - 40 - 8 - 286) / 6, minimum, 192))
+    return math.floor(math.clamp((viewportWidth - 36 - 40 - 8 - 286) / 6, minimum, 204))
 end
 
 local uiInteraction = (function()
@@ -2988,8 +2955,6 @@ local uiInteraction = (function()
         local size = object.AbsoluteSize
         local screenX = math.clamp(object.AbsolutePosition.X, 8, math.max(8, viewport.X - size.X - 8))
         local screenY = math.clamp(object.AbsolutePosition.Y, 28, math.max(28, viewport.Y - size.Y - 8))
-        -- Position is relative to the parent's origin, not the screen. Subtract
-        -- the parent's absolute position before writing the clamped coordinates.
         local parentOrigin = Vector2.new(0, 0)
         local parentSize = viewport
         if object.Parent:IsA("GuiObject") then
@@ -3223,9 +3188,6 @@ local function makePanel(title, x)
     return state
 end
 
--- Resolve both the usual {frame = Frame, n = number} wrapper and a raw Frame.
--- Some executor/build combinations produced a nil panel argument during UI setup;
--- fall back to an existing utility panel rather than aborting the entire script.
 local function resolvePanelState(panel)
     if type(panel) == "table" and panel.frame then
         return panel
@@ -3260,7 +3222,6 @@ local function nextOrder(panel)
     return state.n
 end
 
--- Dropdown widget: choices open in a top-layer popup, so scroll clipping cannot hide them.
 local function addCycle(parent, label, options, start, onChange, key)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(1, 0, 0, 38)
@@ -3313,7 +3274,6 @@ local function addCycle(parent, label, options, start, onChange, key)
     }
 end
 
--- Slider widget
 local function addSlider(parent, label, minV, maxV, value, step, onChange, key)
     local f = Instance.new("Frame")
     f.Size = UDim2.new(1, 0, 0, 34)
@@ -3395,7 +3355,6 @@ local function addSlider(parent, label, minV, maxV, value, step, onChange, key)
     return f
 end
 
--- Module row (left-click toggle, right-click settings)
 local function addModule(panel, name, onToggle)
     local mod = {name = name, enabled = false, keybind = nil}
 
@@ -3413,6 +3372,7 @@ local function addModule(panel, name, onToggle)
     holderPadding.Parent = holder
     mod.holder = holder
     mod.panel = panel.panel or panel.frame
+    mod.settings = nil
     vlist(holder)
 
     local btn = Instance.new("TextButton")
@@ -3438,6 +3398,7 @@ local function addModule(panel, name, onToggle)
     settings.BorderSizePixel = 0
     settings.Visible = false
     settings.Parent = holder
+    mod.settings = settings
     settings:SetAttribute("TrueSightRole", "sub")
     corner(settings, 6)
     local settingsPadding = Instance.new("UIPadding")
@@ -3539,12 +3500,27 @@ local function addModule(panel, name, onToggle)
     end)
     refreshBindButton()
 
+    local function closeSettings()
+        settings.Visible = false
+        if arrow then arrow.Text = "+" end
+        if uiInteraction and uiInteraction.resizeState and uiInteraction.resizeState.openSettingsModule == mod then
+            uiInteraction.resizeState.openSettingsModule = nil
+        end
+    end
+    mod.closeSettings = closeSettings
+
     local function toggleSettings()
         if not mod.hasSettings then return end
-        settings.Visible = not settings.Visible
-        if arrow then arrow.Text = settings.Visible and "−" or "+" end
         if settings.Visible then
-            hint.Text = "Settings opened for " .. name .. "  |  choose an option from a dropdown"
+            closeSettings()
+        else
+            local interactionState = uiInteraction and uiInteraction.resizeState
+            local other = interactionState and interactionState.openSettingsModule
+            if other and other ~= mod and other.closeSettings then other.closeSettings() end
+            settings.Visible = true
+            if interactionState then interactionState.openSettingsModule = mod end
+            if arrow then arrow.Text = "−" end
+            hint.Text = "Settings: " .. name .. "  |  use dropdowns or sliders"
         end
     end
     btn.MouseButton1Click:Connect(function()
@@ -3563,7 +3539,6 @@ local function addModule(panel, name, onToggle)
     return mod
 end
 
--- Plain action row (not a toggle)
 local function addAction(panel, text, callback)
     local state = resolvePanelState(panel)
     if not state then
@@ -3630,7 +3605,6 @@ local function addTextInput(panel, title, placeholder, initialValue, onCommit, k
     return box
 end
 
--- Keeps every Color widget showing the same value
 local colorWidgets = {}
 onAccent(function()
     for _, w in ipairs(colorWidgets) do w.set(accentIndex) end
@@ -3640,10 +3614,6 @@ end)
 -- Panels and modules
 ------------------------------------------------------------------
 
--- VISUAL
--- Keep this panel's many setup locals in their own function scope. Luau has a
--- 200-local-register limit per function, and the large UI setup otherwise
--- reaches that limit before the Desync Box module is declared.
 local visualModules = {}
 ;(function()
 local visualPanel = makePanel("Visual", 28)
@@ -3709,8 +3679,6 @@ standAuraMod.slider("Intensity", 0.5, 2.5, standAuraIntensity, 0.1, function(v)
     updateStandAuraIntensity()
 end)
 
--- Stand FX assets are discovered automatically during startup. Keep only a
--- passive status label here; no manual scan control is exposed.
 local standAuraSettings = standAuraCycle.button.Parent
 standAuraScanStatus = Instance.new("TextLabel")
 standAuraScanStatus.Name = "StandAuraStartupStatus"
@@ -3774,8 +3742,6 @@ ghostMod.cycle("Style", {"Chams", "Box", "Both"}, 1, function(i)
         ghostBox.Visible = (i == 2 or i == 3)
         ghostBox.SurfaceTransparency = 1
     end
-    -- Hide the cloned body completely in Box-only mode; otherwise the
-    -- ForceField cham itself would still show behind the box.
     for _, pair in ipairs(ghostAvatar.parts) do
         if pair.ghost and pair.ghost.Parent then
             pair.ghost.Material = Enum.Material.ForceField
@@ -3788,7 +3754,6 @@ ghostMod.cycle("Label", {"On", "Off"}, 1, function(i)
     if ghostGui then ghostGui.Enabled = ghostLabelOn end
 end)
 
--- Expose only the module handles needed by the respawn handler outside scope.
 visualModules.hat = hatMod
 visualModules.wings = wingMod
 visualModules.aura = auraMod
@@ -3807,7 +3772,7 @@ end)()
     if not visualPanel then return end
 
     ------------------------------------------------------------------
-    -- ReplicatedStorage YBA cosmetics / accessory picker
+    -- YBA cosmetic picker.
     ------------------------------------------------------------------
     local cosmeticCandidates = {}
     local cosmeticNames = {"None"}
@@ -3872,7 +3837,6 @@ end)()
     end
 
     local function hasNestedAccessory(model)
-        -- A direct-child check avoids repeatedly scanning large nested cosmetic trees.
         for _, child in ipairs(model:GetChildren()) do
             if child:IsA("Accessory") then return true end
         end
@@ -3905,11 +3869,8 @@ end)()
         local seen = {}
         local blackFlashSeen = {}
         for scanIndex, inst in ipairs(descendants) do
-            -- Yield periodically so large asset folders can't hitch menu startup.
             if scanIndex % 450 == 0 then task.wait() end
 
-            -- Detect Black Flash source folders/effects during the same pass as
-            -- the cosmetic scan, avoiding a second expensive full-tree traversal.
             local norm = lower(inst.Name):gsub("[^%w]", "")
             if string.find(norm, "blackflash", 1, true) then
                 local root = inst
@@ -3930,11 +3891,8 @@ end)()
 
             local candidate = false
             if inst:IsA("Accessory") then
-                -- Accessory instances are exact wearables and are preferred.
                 candidate = hasBasePart(inst)
             elseif inst:IsA("Model") then
-                -- Filter by name/path before traversing descendants. Scanning every
-                -- model's full subtree made ReplicatedStorage scans unnecessarily expensive.
                 local n = lower(inst.Name)
                 local containerName = n == "cosmetic" or n == "cosmetics" or n == "hat"
                     or n == "hats" or n == "accessory" or n == "accessories"
@@ -3973,8 +3931,6 @@ end)()
             return an < bn
         end)
         for _, item in ipairs(blackFlashAssets) do table.insert(blackFlashNames, item.label) end
-        -- Preload a bounded set of Black Flash sounds in the background so impact audio
-        -- starts closer to the visual burst instead of waiting for first-use asset streaming.
         task.spawn(function()
             local preloadItems, seenSounds = {}, {}
             for _, item in ipairs(blackFlashAssets) do
@@ -4053,14 +4009,11 @@ end)()
         if string.find(lowerLabel, "glass", 1, true) or string.find(lowerLabel, "spectacle", 1, true)
             or string.find(lowerLabel, "mask", 1, true) or string.find(lowerLabel, "visor", 1, true)
             or string.find(lowerLabel, "face", 1, true) then
-            -- Roblox faces forward along the head's local -Z axis.
             localTarget = CFrame.new(0, 0.05, -(head.Size.Z * 0.5 + boundsSize.Z * 0.5 - 0.03))
         elseif string.find(lowerLabel, "hat", 1, true) or string.find(lowerLabel, "crown", 1, true)
             or string.find(lowerLabel, "helmet", 1, true) or string.find(lowerLabel, "headwear", 1, true) then
             localTarget = CFrame.new(0, head.Size.Y * 0.5 + boundsSize.Y * 0.5 - 0.06, 0)
         else
-            -- Unknown YBA names default to the top/centre of the head, not the
-            -- previous fixed +0.6 offset which placed many cosmetics too high.
             localTarget = CFrame.new(0, head.Size.Y * 0.5 + boundsSize.Y * 0.35, 0)
         end
         local desiredGeometryCF = head.CFrame * localTarget * buildCosmeticOffset()
@@ -4089,13 +4042,10 @@ end)()
         if clone:IsA("BasePart") then table.insert(parts, clone) end
         if #parts == 0 then clone:Destroy(); return false, "Cosmetic has no 3D parts" end
 
-        -- Compute a transform from the asset's actual bounding-box centre to a
-        -- head/face/top anchor, then apply the user's manual fine-alignment offsets.
         local delta = cosmeticPlacementCFrame(clone, head, label or clone.Name)
         if clone:IsA("Model") then
             pcall(function() clone:PivotTo(delta * clone:GetPivot()) end)
         else
-            -- Accessory/Folder-like containers don't expose PivotTo or CFrame.
             for _, part in ipairs(parts) do
                 if part and part.Parent then part.CFrame = delta * part.CFrame end
             end
@@ -4163,8 +4113,6 @@ end)()
             local handle = clone:FindFirstChild("Handle")
             local hostAttachment, handleAttachment = findMatchingCosmeticAttachment(character, handle)
             if handle and handle:IsA("BasePart") and hostAttachment and handleAttachment then
-                -- Match the wearable's authored attachment (HatAttachment,
-                -- FaceFrontAttachment, etc.) instead of guessing a fixed height.
                 for _, obj in ipairs(clone:GetDescendants()) do
                     if obj:IsA("BasePart") then
                         obj.Anchored = false
@@ -4187,8 +4135,6 @@ end)()
                 weld.Parent = handle
                 ok = true
             else
-                -- Some YBA assets are custom Models disguised as Accessory instances
-                -- and have no standard Attachment pair. Use a name-aware head/face fit.
                 ok, err = applyModelCosmetic(clone, character, record.label)
             end
         else
@@ -4241,8 +4187,7 @@ end)()
     cosmeticStatus.Parent = settingsPanel
 
     ------------------------------------------------------------------
-    -- Neon Halo: one thin, continuous-looking open ring made from Beam segments.
-    -- This avoids the thick, dotted double-ring that obscured the centre in-game.
+    -- Neon Halo.
     ------------------------------------------------------------------
     local haloParts = {}
     local haloSegmentRecords = {}
@@ -4318,8 +4263,7 @@ end)()
     visualModules.addHalo = addHalo
     visualModules.removeHalo = removeHalo
     ------------------------------------------------------------------
-    -- Black Flash: chance roll on nearby opponent damage shortly after our attack animation.
-    -- It reads VFX/audio source groups discovered during the shared startup scan.
+    -- Black Flash VFX and sound.
     ------------------------------------------------------------------
     local function disconnectBlackFlashAnimation()
         if blackFlashAnimationConnection then
@@ -4354,9 +4298,6 @@ end)()
             or character:FindFirstChild("LeftHand") or character:FindFirstChild("Left Arm"))
     end
     local function blackFlashAttackerCharacter()
-        -- YBA commonly mirrors player avatars inside workspace.Living. Prefer that
-        -- live rig when it has a root, since it can be closer to the combat position
-        -- than Player.Character during a respawn/Stand transition.
         local living = workspace:FindFirstChild("Living")
         local liveCharacter = living and living:FindFirstChild(player.Name)
         if liveCharacter and (liveCharacter:FindFirstChild("HumanoidRootPart")
@@ -4375,10 +4316,6 @@ end)()
             local toAttacker = ownRoot.Position - targetRoot.Position
             local flat = Vector3.new(toAttacker.X, 0, toAttacker.Z)
             if flat.Magnitude > 0.05 then
-                -- Put the impact between the two characters and turn it toward the
-                -- attacker, independent of which direction the victim is facing.
-                -- Keep the burst close to the target's front/upper torso rather than
-                -- offsetting it more than a stud from the actual hit position.
                 local position = targetRoot.Position + flat.Unit * math.min(0.38, flat.Magnitude * 0.10)
                     + Vector3.new(0, math.clamp(targetRoot.Size.Y * 0.12, 0.18, 0.38), 0)
                 return CFrame.lookAt(position, ownRoot.Position + Vector3.new(0, 0.35, 0))
@@ -4405,8 +4342,6 @@ end)()
             if blackFlashStatus then blackFlashStatus.Text = "No named Black Flash assets were found during startup discovery." end
             return false
         end
-        -- Dropdown index 1 means Auto-detect (first discovered group); named options
-        -- start at index 2 and map to the corresponding discovered group minus one.
         local selectedIndex = tonumber(blackFlashSelectedIndex) or 1
         local sourceIndex = selectedIndex <= 1 and 1 or (selectedIndex - 1)
         sourceIndex = math.clamp(sourceIndex, 1, #blackFlashAssets)
@@ -4415,9 +4350,6 @@ end)()
             if blackFlashStatus then blackFlashStatus.Text = "Selected Black Flash asset is no longer available. Restart TrueSight to refresh assets." end
             return false
         end
-        -- Build one composite from the selected source plus whichever companion
-        -- capability is missing. YBA often stores Black Flash VFX and audio in separate
-        -- folders, so selecting either one should still play BOTH when both are available.
         local selectedClone = cloneArchivable(record.source)
         if not selectedClone then
             if blackFlashStatus then blackFlashStatus.Text = "Could not clone " .. tostring(record.label) end
@@ -4426,10 +4358,6 @@ end)()
         local composite = Instance.new("Folder")
         composite.Name = "TrueSightBlackFlashComposite"
 
-        -- Black Flash folders in ReplicatedStorage may contain large PointLights /
-        -- SurfaceLights used by the original in-game scene. Reusing them locally can
-        -- tint the whole arena red for several seconds. Keep the particles and audio,
-        -- but remove scene-lighting objects from every cloned source.
         local function stripBlackFlashSceneLights(root)
             if not root then return end
             local items = {root}
@@ -4479,7 +4407,6 @@ end)()
                 hasVisual = select(2, inspectCapabilities(extra))
             end
         end
-        -- Recheck after adding the visual companion, since that group may contain sound too.
         hasSound = select(1, inspectCapabilities(composite))
         if not hasSound and companionSound then
             local extra = cloneArchivable(companionSound.source)
@@ -4491,7 +4418,6 @@ end)()
         end
         local clone = composite
 
-        -- Remove executable logic but retain particles, geometry, attachments and sound.
         stripBlackFlashSceneLights(clone)
         for _, obj in ipairs(clone:GetDescendants()) do
             if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
@@ -4529,8 +4455,6 @@ end)()
             pcall(function() clone:Emit(blackFlashParticleCount) end)
             retainBlackFlashObject(clone, 2.8 * (blackFlashActiveObjects._state.durationFactor or 1.6))
         elseif clone:IsA("Trail") or clone:IsA("Beam") then
-            -- Trail/Beam templates need two valid attachments. If source is a single
-            -- asset leaf without both, it cannot render on its own; report it safely.
             local a0, a1 = clone.Attachment0, clone.Attachment1
             if not a0 or not a1 then
                 clone:Destroy()
@@ -4564,8 +4488,6 @@ end)()
                 wrapper.Name = "TrueSightBlackFlashFX"
                 clone.Parent = wrapper
             else
-                -- Unknown container types still get useful local VFX by mounting
-                -- descendant ParticleEmitters and Sounds to an attachment/hand.
                 wrapper = Instance.new("Model")
                 wrapper.Name = "TrueSightBlackFlashFX"
                 clone.Parent = wrapper
@@ -4579,8 +4501,6 @@ end)()
                     obj.CanTouch = false
                     obj.CanQuery = false
                     obj.CastShadow = false
-                    -- Many stored Black Flash templates include bright placeholder shards.
-                    -- Keep them invisible and use the template's real emitters for the burst.
                     obj.Transparency = 1
                     table.insert(parts, obj)
                 end
@@ -4588,32 +4508,23 @@ end)()
             if #parts > 0 then
                 wrapper.Parent = workspace
                 pcall(function()
-                    -- Scale oversized source geometry before aligning its actual bounds.
                     wrapper:ScaleTo(blackFlashActiveObjects._state.effectScale or 0.58)
                 end)
                 pcall(function()
-                    -- Stored effect models sometimes have a pivot far from their visible geometry.
-                    -- Align their bounds to the impact point rather than trusting that pivot.
                     local boundsCFrame = wrapper:GetBoundingBox()
                     local currentPivot = wrapper:GetPivot()
                     local worldTransform = impactCFrame * boundsCFrame:Inverse()
                     wrapper:PivotTo(worldTransform * currentPivot)
                 end)
-                -- Start audio first; then emit the burst in the same event callback to
-                -- minimise the perceived gap between the Black Flash sound and VFX.
                 for _, obj in ipairs(wrapper:GetDescendants()) do
                     if obj:IsA("Sound") then
                         obj.Volume = blackFlashVolume
                         obj.Looped = false
-                        -- Standalone Sound objects parented under Model/Folder containers
-                        -- may not get reliable spatial playback; attach them to the hit anchor.
                         if not obj.Parent or not (obj.Parent:IsA("BasePart") or obj.Parent:IsA("Attachment")) then
                             local soundAttachment = makeBlackFlashAttachment(anchor, impactCFrame)
                             obj.Parent = soundAttachment
                             retainBlackFlashObject(soundAttachment, math.max(3, obj.TimeLength + 0.5))
                         end
-                        -- Startup discovery preloads source sounds; don't wait on Loaded here,
-                        -- because waiting at hit-time makes audio lag behind the VFX burst.
                         pcall(function() obj.TimePosition = 0 end)
                         pcall(function() obj:Play() end)
                         retainBlackFlashObject(obj, math.max(4, obj.TimeLength + 1))
@@ -4624,8 +4535,6 @@ end)()
                     if obj:IsA("ParticleEmitter") then
                         obj.Enabled = true
                         local parent = obj.Parent
-                        -- Root-level emitters stored directly under a Model/Folder do not
-                        -- have a valid emission point. Mount those at the computed impact.
                         if not parent or (not parent:IsA("Attachment") and not parent:IsA("BasePart")) then
                             if not fallbackEmitterAttachment then
                                 fallbackEmitterAttachment = makeBlackFlashAttachment(anchor, impactCFrame)
@@ -4655,7 +4564,6 @@ end)()
                 local attachment = makeBlackFlashAttachment(anchor, impactCFrame)
                 retainBlackFlashObject(attachment, 4 * (blackFlashActiveObjects._state.durationFactor or 1.6))
                 local descendants = wrapper:GetDescendants()
-                -- Reparent/play sounds before particle emission for tighter sync.
                 for _, obj in ipairs(descendants) do
                     if obj:IsA("Sound") then
                         obj.Volume = blackFlashVolume
@@ -4663,8 +4571,6 @@ end)()
                         local soundAttachment = makeBlackFlashAttachment(anchor, impactCFrame)
                         obj.Parent = soundAttachment
                         retainBlackFlashObject(soundAttachment, math.max(3, obj.TimeLength + 0.5))
-                        -- Startup discovery preloads source sounds; don't wait on Loaded here,
-                        -- because waiting at hit-time makes audio lag behind the VFX burst.
                         pcall(function() obj.TimePosition = 0 end)
                         pcall(function() obj:Play() end)
                         retainBlackFlashObject(obj, math.max(4, obj.TimeLength + 1))
@@ -4705,9 +4611,6 @@ end)()
         blackFlashAnimationConnection = {}
         local function recordAttackTrack(track)
             if not blackFlashMod or not blackFlashMod.enabled or not track then return end
-            -- Animation tracks are a backup signal only. Require Action priority here;
-            -- mouse/skill-key input handles attack timing when YBA doesn't expose tracks.
-            -- Ordinary walking/idle animations must not make unrelated damage count.
             local priority = track.Priority
             if not priority or priority.Value < Enum.AnimationPriority.Action.Value then return end
             blackFlashActiveObjects._state.recentAttackAt = os.clock()
@@ -4729,8 +4632,6 @@ end)()
         table.insert(blackFlashAnimationConnection, character.DescendantAdded:Connect(function(obj)
             if obj:IsA("Animator") then hookAnimator(obj) end
         end))
-        -- YBA can play Stand attack tracks on a model under workspace.Living rather
-        -- than on the player's Humanoid. Watch that local player's live rig too.
         local living = workspace:FindFirstChild("Living")
         local liveCharacter = living and living:FindFirstChild(player.Name)
         if liveCharacter and liveCharacter ~= character then
@@ -4770,9 +4671,6 @@ end)()
                 if blackFlashMod and blackFlashMod.enabled then attachBlackFlashCharacter(character) end
             end)
         end))
-        -- Input timestamps are a fallback for YBA combat/Stand moves whose tracks
-        -- are not exposed through the local Humanoid's AnimationPlayed signal.
-        -- The effect still only fires when another player's health actually drops.
         keepConnection(UserInputService.InputBegan:Connect(function(input)
             if not blackFlashMod or not blackFlashMod.enabled then return end
             if UserInputService:GetFocusedTextBox() then return end
@@ -4780,7 +4678,6 @@ end)()
                 or input.UserInputType == Enum.UserInputType.MouseButton2
             if input.UserInputType == Enum.UserInputType.Keyboard then
                 local key = input.KeyCode
-                -- Include common YBA moves and hotbar inputs (1-9), plus Q for games that bind it.
                 isAttackInput = key == Enum.KeyCode.Q or key == Enum.KeyCode.E or key == Enum.KeyCode.R
                     or key == Enum.KeyCode.T or key == Enum.KeyCode.Y or key == Enum.KeyCode.F
                     or key == Enum.KeyCode.G or key == Enum.KeyCode.H or key == Enum.KeyCode.Z
@@ -4791,8 +4688,6 @@ end)()
                     or key == Enum.KeyCode.Nine
             end
             if isAttackInput then
-                -- Some YBA combat inputs are marked processed. The effect still requires
-                -- actual nearby opponent health loss inside the short attack window.
                 blackFlashActiveObjects._state.recentAttackAt = os.clock()
                 if blackFlashStatus then
                     blackFlashStatus.Text = "Attack input detected — waiting for nearby target health to drop."
@@ -4801,8 +4696,6 @@ end)()
         end))
         local watchedTargetModels = {}
         local playerTargetWatchers = {}
-        -- HealthChanged signals are not consistently exposed on every YBA live rig.
-        -- Share one handler between the signal and a low-rate polling fallback.
         local processedDamage = setmetatable({}, {__mode = "k"})
         local function handleBlackFlashDamage(character, humanoid, oldHealth, newHealth)
             if newHealth >= oldHealth - 0.05 then return end
@@ -4922,8 +4815,6 @@ end)()
                 end
             end))
         end
-        -- Poll both normal Player.Character rigs and workspace.Living mirrors at 8 Hz.
-        -- Some YBA builds replicate the visible health change only on one of these forms.
         local healthPollAccumulator = 0
         local healthPollLast = setmetatable({}, {__mode = "k"})
         keepConnection(RunService.Heartbeat:Connect(function(dt)
@@ -4935,9 +4826,6 @@ end)()
             local living = workspace:FindFirstChild("Living")
             if living then
                 for _, character in ipairs(living:GetChildren()) do
-                    -- Some YBA live models don't exactly match a Player.Name. Watch
-                    -- every non-local humanoid under Living and let distance + attack
-                    -- timing reject unrelated damage.
                     if character ~= player.Character and character.Name ~= player.Name
                         and character:FindFirstChildOfClass("Humanoid") then
                         candidates[character] = true
@@ -5016,7 +4904,7 @@ end)()
     visualModules.stopBlackFlash = stopBlackFlash
 
     ------------------------------------------------------------------
-    -- Orbiting orbs: one capped-rate update loop for three local lights.
+    -- Orbiting orbs.
     ------------------------------------------------------------------
     local orbParts, orbConnection = {}, nil
     local orbSpeed, orbRadius = 1.6, 1.8
@@ -5077,7 +4965,7 @@ end)()
     visualModules.removeOrbs = removeOrbs
 
     ------------------------------------------------------------------
-    -- Footstep sparks: throttled emission while walking on the ground.
+    -- Footstep sparks.
     ------------------------------------------------------------------
     local footstepConnection
     local function stopFootstepSparks()
@@ -5127,7 +5015,7 @@ end)()
     visualModules.stopFootstepSparks = stopFootstepSparks
 
     ------------------------------------------------------------------
-    -- Body glow: local Highlight with adjustable fill/outline strength.
+    -- Body glow.
     ------------------------------------------------------------------
     local bodyHighlight
     local bodyFill = 0.84
@@ -5172,8 +5060,6 @@ end)()
     visualModules.replicatedCosmetic = cosmeticHatMod
     visualModules.applyReplicatedCosmetic = applySelectedCosmetic
 
-    -- A single startup coordinator scans Stand aura sources first, then scans
-    -- ReplicatedStorage once for both YBA cosmetics and Black Flash FX/audio.
     task.spawn(function()
         task.wait(0.25)
         if not standAuraScanBusy then
@@ -5208,10 +5094,6 @@ end)()
     end)
 end)()
 
--- RENDER
--- Isolate render-module construction from the main chunk. The main script has
--- many long-lived locals (callbacks/config state), so this keeps Luau's
--- 200-register limit from being reached while creating later render modules.
 local renderState = (function()
 local renderPanel = makePanel("Render", 228)
 
@@ -5357,8 +5239,6 @@ local function setLowEffects(on)
         table.clear(originalEffects)
         originalGlobalShadows = Lighting.GlobalShadows
         Lighting.GlobalShadows = false
-        -- Avoid repeatedly scanning the entire world; cache only render-heavy
-        -- visual instances once, and restore their exact previous state later.
         local candidates = workspace:GetDescendants()
         for _, obj in ipairs(Lighting:GetDescendants()) do table.insert(candidates, obj) end
         for _, obj in ipairs(candidates) do
@@ -5465,9 +5345,6 @@ return {
 }
 end)()
 
--- WORLD
--- Keep world-module locals in a separate function scope to stay below Luau's
--- per-function local-register limit. Return a cleanup closure for the mood FX.
 modules.cleanupWorldMood = (function()
 local worldPanel = makePanel("World", 428)
 
@@ -5538,8 +5415,6 @@ end
 local skyboxMod = addModule(worldPanel, "Custom Skybox", function(on)
     if on then applySkybox() else restoreSkybox() end
 end)
--- Ready-made six-face skyboxes using Roblox image assets. The IDs are
--- preset image assets; access/availability can vary by experience or moderation.
 local skyboxPresets = {
     ["Purple Nebula"] = {"159454286", "159454299", "159454296", "159454293", "159454300", "159454288"},
     ["Blue Aurora"] = {"12064107", "12064152", "12064121", "12063984", "12064115", "12064131"},
@@ -5752,7 +5627,6 @@ end)
 return cleanupWorldMoodInternal
 end)()
 
--- HUD
 ;(function()
 local hudPanel = makePanel("HUD", 828)
 
@@ -5807,14 +5681,10 @@ local watermarkMod = addModule(hudPanel, "Watermark", function(on)
 end)
 watermarkMod.hidden = true
 
--- Visible-only player labels. YBA's stand state is not a public Roblox API,
--- so stand detection checks common attributes/values and stand model names.
 local nameTagObjects = {}
 local nameTagLoop
 local nameTagsMod
 
--- Avoid treating keybinds (for example Q or Tab) as stand names. YBA may
--- expose control/keybind values alongside other character/player values.
 local invalidStandTokens = {
     q=true, w=true, e=true, r=true, t=true, y=true, u=true, i=true, o=true, p=true,
     a=true, s=true, d=true, f=true, g=true, h=true, j=true, k=true, l=true,
@@ -5843,7 +5713,6 @@ local function normalizeStandCandidate(value)
     if invalidStandTokens[compact] or string.match(compact, "^%d+$") then
         return nil
     end
-    -- Single-letter labels are almost always keybinds, not YBA stand names.
     if #compact == 1 and string.match(compact, "^[%a]$") then return nil end
     return value
 end
@@ -5859,7 +5728,6 @@ local function createNameTag(plr)
     local character = plr.Character
     local head = character and character:FindFirstChild("Head")
     local existing = nameTagObjects[plr]
-    -- Keep the same GUI instance, but retarget it whenever this player respawns.
     if existing and existing.Parent then
         if head and existing.Adornee ~= head then
             existing.Adornee = head
@@ -5906,9 +5774,6 @@ local function setNameTags(on)
                 local head = character and character:FindFirstChild("Head")
                 local hum = character and character:FindFirstChildOfClass("Humanoid")
                 local tag = nameTagObjects[plr]
-                -- Resolve a missing tag and retarget it to the new character's Head
-                -- before checking health. Dead characters hide the tag temporarily;
-                -- a respawn reuses the GUI and attaches it to the replacement Head.
                 if head then
                     if not tag or not tag.Parent then
                         createNameTag(plr)
@@ -5954,8 +5819,6 @@ local function setNameTags(on)
                                 end
                             end
                             if not standName then
-                                -- Some builds parent the summoned Stand model directly to
-                                -- the character. Ignore control/key names and utility models.
                                 for _, obj in ipairs(character:GetChildren()) do
                                     if obj:IsA("Model") and obj.Name ~= "" then
                                         local n = string.lower(obj.Name)
@@ -5997,8 +5860,6 @@ table.insert(connections, Players.PlayerAdded:Connect(function(plr)
     end)
 end))
 
--- YBA stun timer. Detection is best-effort: YBA may not replicate its internal
--- stun state to the local client. The label itself is draggable.
 local stunTimerLabel = Instance.new("TextLabel")
 stunTimerLabel.Name = "TrueSightStunTimer"
 stunTimerLabel.Size = UDim2.fromOffset(190, 30)
@@ -6016,8 +5877,6 @@ stunTimerLabel.Selectable = true
 stunTimerLabel.Parent = gui
 corner(stunTimerLabel, 6)
 
--- Optional head-attached display for players who prefer the timer above their
--- own character rather than as a draggable screen HUD element.
 local stunTimerMod
 local stunDisplayMode = 1 -- 1 = screen GUI, 2 = above head
 local stunHeadBillboard = Instance.new("BillboardGui")
@@ -6086,8 +5945,6 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 local stunStartedAt
--- Fallback estimate when YBA only exposes a boolean/flag rather than a remaining timer.
--- The estimate improves from measured stun lengths observed on this client during this session.
 local learnedStunDuration = 2.0
 local predictedStunDuration
 
@@ -6101,9 +5958,6 @@ local function truthyStunValue(value)
     return false
 end
 
--- Look for game-provided timing fields. A plain Stunned=true flag tells us only
--- whether stun is active, not how much time remains, so we separately look for
--- names that specifically indicate a remaining countdown or end timestamp.
 local function getStunTimingSignals()
     local character = player.Character
     if not character then return nil, nil end
@@ -6126,7 +5980,6 @@ local function getStunTimingSignals()
 
         if string.find(key, "endtime", 1, true) or string.find(key, "until", 1, true)
             or string.find(key, "endsat", 1, true) then
-            -- Different games use either server-clock or local-clock timestamps.
             local ok, serverNow = pcall(function() return workspace:GetServerTimeNow() end)
             local candidates = {}
             if ok and type(serverNow) == "number" then table.insert(candidates, number - serverNow) end
@@ -6139,8 +5992,6 @@ local function getStunTimingSignals()
             return
         end
 
-        -- Total-duration fields are useful to seed the fallback countdown, but
-        -- are not mistaken for remaining time.
         if string.find(key, "duration", 1, true) and number <= 15 then
             duration = duration and math.min(duration, number) or number
         end
@@ -6169,7 +6020,6 @@ end
 local function isActiveStunKey(name)
     local key = string.lower(tostring(name)):gsub("[^%w]", "")
     if not string.find(key, "stun", 1, true) then return false end
-    -- Duration/end-time metadata isn't proof that a stun is currently active.
     if string.find(key, "duration", 1, true)
         or string.find(key, "endtime", 1, true)
         or string.find(key, "endsat", 1, true)
@@ -6215,8 +6065,6 @@ local function isLocallyStunned()
             end
         end
     end
-    -- Movement-lock fallback can help detect some stuns, but may also trigger
-    -- during moves. Prefer an explicit YBA state whenever one is available.
     if humanoid and humanoid.Health > 0 then
         local jumpDisabled = humanoid.UseJumpPower and humanoid.JumpPower <= 1 or (not humanoid.UseJumpPower and humanoid.JumpHeight <= 0.1)
         if humanoid.WalkSpeed <= 1 and jumpDisabled then
@@ -6244,8 +6092,6 @@ stunTimerMod = addModule(hudPanel, "YBA Stun Timer", function(on)
             if stunned then
                 if not stunStartedAt then
                     stunStartedAt = now
-                    -- If the game exposes a total duration, use it; otherwise
-                    -- use the last observed duration (2s until we learn one).
                     predictedStunDuration = math.clamp(signalDuration or learnedStunDuration, 0.25, 15)
                 end
                 local left
@@ -6257,8 +6103,6 @@ stunTimerMod = addModule(hudPanel, "YBA Stun Timer", function(on)
                     if left > 0 then
                         setStunTimerText(string.format("STUN: ~%.1fs LEFT", left), BAD)
                     else
-                        -- Detection is still active after our estimate expired.
-                        -- Never imply the stun ended until the detected flag clears.
                         setStunTimerText("STUN: ~0.0s LEFT", BAD)
                     end
                 end
@@ -6267,7 +6111,6 @@ stunTimerMod = addModule(hudPanel, "YBA Stun Timer", function(on)
                 if stunStartedAt then
                     local observed = now - stunStartedAt
                     if observed >= 0.2 and observed <= 12 then
-                        -- Learn a smoothed fallback duration for later stuns.
                         learnedStunDuration = math.clamp(learnedStunDuration * 0.55 + observed * 0.45, 0.25, 12)
                     end
                 end
@@ -6284,22 +6127,16 @@ stunTimerMod.cycle("Display", {"Screen GUI", "Above Head"}, 1, function(index)
     stunDisplayMode = index
     updateStunDisplay()
 end)
--- Keep the head display attached over respawns while the module remains active.
 table.insert(connections, player.CharacterAdded:Connect(function()
     task.defer(updateStunDisplay)
 end))
 
--- on by default (a saved config overrides these)
 watermarkMod.set(true)
 fpsMod.set(true)
 pingMod.set(true)
 
--- CLIENT
 local clientPanel = makePanel("Client", 628)
 
--- Worthiness Helper: unlocks the prerequisites in the normal Character skill tree
--- before requesting Worthiness. This uses the game's RemoteFunction; it does not
--- change local values or pretend the unlock succeeded when the server rejects it.
 ;(function()
     local worthinessMod
     local worthinessStandConn
@@ -6309,9 +6146,8 @@ local clientPanel = makePanel("Client", 628)
     local worthinessQueuedReason
 
     ------------------------------------------------------------------
-    -- Lightweight Stand preview. The viewport is shown only while the
-    -- Worthiness Helper is enabled, and rotates at a capped 18 FPS.
-    ------------------------------------------------------------------
+    -- Stand preview.
+        ------------------------------------------------------------------
     local previewFrame = Instance.new("Frame")
     previewFrame.Name = "TrueSightStandPreview"
     previewFrame.AnchorPoint = Vector2.new(0, 0)
@@ -6416,7 +6252,6 @@ local clientPanel = makePanel("Client", 628)
     local previewManualDrag = false
     local previewLastDragX = 0
 
-    -- Drag directly on the 3D canvas to rotate the model manually.
     previewViewport.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             previewManualDrag = true
@@ -6490,16 +6325,12 @@ local clientPanel = makePanel("Client", 628)
                     or string.find(name, "collision", 1, true)
                     or string.find(name, "hurtbox", 1, true)
                     or name == "humanoidrootpart" or name == "rootpart"
-                -- Ignore local transparency modifiers when scoring: they can hide
-                -- legitimate Stand pieces in the live scene even though the preview clone can show them.
                 local hidden = obj.Transparency >= 0.995 or maxDimension < 0.025
                 if not hidden and not big and not helperPart and minDimension >= 0 then score += 1 end
             end
         end
         if score == 0 then return 0 end
 
-        -- Stand FX contain lots of tiny strips and particles. Don't mistake a
-        -- horizontal line of effect meshes for a whole Stand in the viewport.
         local boundsOk, _, bounds = pcall(function()
             local cf, size = model:GetBoundingBox()
             return cf, size
@@ -6513,7 +6344,6 @@ local clientPanel = makePanel("Client", 628)
 
     local function getStandModelWithin(container, targetName, allowContainerModel)
         if not container then return nil end
-        -- Live YBA characters commonly keep the current skin under StandMorph.
         local morph = container:FindFirstChild("StandMorph", true)
         if morph and morph:IsA("Model") and previewVisiblePartScore(morph) > 0 then return morph end
 
@@ -6534,9 +6364,6 @@ local clientPanel = makePanel("Client", 628)
         end
         if allowContainerModel and container:IsA("Model") and previewVisiblePartScore(container) > 0 then return container end
 
-        -- Asset layouts vary. Rank every nested model and choose the model with
-        -- the most convincing full-Stand geometry, rather than the first little
-        -- VFX strip/part that happens to be inside the asset folder.
         local best, bestScore = nil, 0
         for _, obj in ipairs(container:GetDescendants()) do
             if obj:IsA("Model") then
@@ -6565,14 +6392,12 @@ local clientPanel = makePanel("Client", 628)
         local wanted = normalizedStandName(standName)
         if wanted == "" then return nil end
 
-        -- Prefer an exact child-name match; normalized names ignore spaces/punctuation.
         for _, child in ipairs(standsFolder:GetChildren()) do
             if normalizedStandName(child.Name) == wanted then
                 local model = getStandModelWithin(child, standName, true)
                 if model then return model end
             end
         end
-        -- Some builds put the StandMorph deeper inside the named asset folder.
         for _, child in ipairs(standsFolder:GetChildren()) do
             if string.find(normalizedStandName(child.Name), wanted, 1, true)
                 or string.find(wanted, normalizedStandName(child.Name), 1, true) then
@@ -6580,8 +6405,6 @@ local clientPanel = makePanel("Client", 628)
                 if model then return model end
             end
         end
-        -- Last attempt: a model itself may be named after the Stand even when
-        -- the root folder has a generic name.
         for _, obj in ipairs(standsFolder:GetDescendants()) do
             if obj:IsA("Model") and normalizedStandName(obj.Name) == wanted then
                 local nestedMorph = obj:FindFirstChild("StandMorph", true)
@@ -6668,12 +6491,6 @@ local clientPanel = makePanel("Client", 628)
                 if helperPart or tooLarge then
                     pcall(function() obj:Destroy() end)
                 else
-                    -- Keep every mesh/part (even if locally hidden in the live scene),
-                    -- and stabilise it before entering WorldModel so Motor6Ds cannot
-                    -- snap visible pieces out of the captured Stand pose.
-                    -- Preview must show the actual Stand opaque even when its live
-                    -- game copy uses LocalTransparencyModifier/Transparency for fade
-                    -- transitions. Keep only technical root parts hidden.
                     obj.Transparency = protectedRoot and 1 or 0
                     if not protectedRoot and (obj.Material == Enum.Material.ForceField or obj.Material == Enum.Material.Glass) then
                         obj.Material = Enum.Material.SmoothPlastic
@@ -6719,14 +6536,10 @@ local clientPanel = makePanel("Client", 628)
         end
         rootPart = rootPart or parts[1]
 
-        -- Set PrimaryPart and anchors while the clone is still outside the WorldModel.
-        -- All parts are static in a viewport; preserving their cloned CFrames is more
-        -- reliable than letting game rigs re-solve joints in a no-physics preview.
         pcall(function() clone.PrimaryPart = rootPart end)
         for _, part in ipairs(parts) do part.Anchored = true end
         clone.Parent = previewWorld
 
-        -- Centre only after anchoring the model, so a first physics step cannot split it.
         RunService.Heartbeat:Wait()
         local boxOk, boxCF, bounds = pcall(function()
             local cf, size = clone:GetBoundingBox()
@@ -6820,10 +6633,6 @@ local clientPanel = makePanel("Client", 628)
     end
 
     local function getCharacterSkillRemote()
-        -- Use the player's current Character RemoteFunction first. This is the
-        -- path used by commonly published YBA LearnSkill examples. The model in
-        -- workspace.Living is only a fallback, since its instance can be stale
-        -- during/just after a Rokakaka reset.
         local character = player.Character
         if character then
             local remote = character:FindFirstChild("RemoteFunction")
@@ -6855,17 +6664,12 @@ local clientPanel = makePanel("Client", 628)
         worthinessRequestBusy = true
         local token = worthinessRunToken
         task.spawn(function()
-            -- A Rokakaka updates Stand/PlayerStats before every skill-tree state
-            -- has necessarily finished resetting on the server. Give that reset
-            -- time to settle before sending LearnSkill. Startup still uses a short wait.
             local reasonText = string.lower(tostring(reason or ""))
             local afterReset = string.find(reasonText, "reset", 1, true) ~= nil
             task.wait(afterReset and 1.35 or 0.18)
 
             local remote, remotePathOrError = getCharacterSkillRemote()
             local resultLines = {}
-            -- Current YBA uses a single "Worthiness" node (not Worthiness I/II).
-            -- Unlock the three Stamina prerequisites in order, then request Worthiness once.
             local sequence = {
                 "Stamina I",
                 "Stamina II",
@@ -6892,17 +6696,12 @@ local clientPanel = makePanel("Client", 628)
                     elseif response == false then
                         result = "returned false (may be already owned, locked, or out of points)"
                     elseif response == nil then
-                        -- YBA's LearnSkill RemoteFunction can perform the action
-                        -- without returning a value; nil is inconclusive, not an error.
                         result = "no return value (normal/inconclusive; verify in Skill Tree)"
                     else
                         result = tostring(response)
                     end
                     table.insert(resultLines, skillName .. " => " .. result)
 
-                    -- Leave time for each prerequisite to replicate before the next
-                    -- node is requested. This is only four calls, so reliability is
-                    -- more useful than shaving a few tenths of a second here.
                     task.wait(0.30)
                 end
             end
@@ -7001,7 +6800,6 @@ local clientPanel = makePanel("Client", 628)
 
         requestWorthiness("startup/enable")
     end)
-    -- Enabled by default; saved TrueSight configs can still turn it off.
     worthinessMod.set(true)
 end)()
 ;(function()
@@ -7014,7 +6812,6 @@ local function applyModuleSearch(text)
         if matches then panelHasMatch[m.panel] = true end
     end
     for title, panel in pairs(panelRegistry) do
-        -- Config controls are utility controls, not searchable modules.
         if title ~= "Client" and title ~= "Config" then
             panel.Visible = query == "" or panelHasMatch[panel] == true
         end
@@ -7079,10 +6876,7 @@ end)
 end
 
 ------------------------------------------------------------------
--- YBA Auto Sprint
--- YBA commonly toggles running with a configurable key (often Left Ctrl).
--- This module taps the selected key when movement resumes at walk speed,
--- and when the character drops from running speed back to walk speed.
+-- YBA Auto Sprint.
 ------------------------------------------------------------------
 local sprintKeyOptions = {"Left Ctrl", "Left Shift", "Right Ctrl", "Right Shift", "V", "C"}
 local sprintKeyData = {
@@ -7099,8 +6893,6 @@ local sprintConn
 local sprintInputWarned = false
 local sprintTapToken = 0
 
--- Always attempt key-up, even if the press/wait path errors. Some executors
--- can leave a synthetic key held if the release call is skipped or fails.
 local function tapSprintKey(keyName)
     local keyInfo = sprintKeyData[keyName]
     if not keyInfo then return false end
@@ -7111,7 +6903,6 @@ local function tapSprintKey(keyName)
             task.wait(0.045)
             local upOk = pcall(keyrelease, keyInfo.virtualKey)
             if upOk then return true end
-            -- Retry release once before falling back to another input route.
             task.wait()
             pcall(keyrelease, keyInfo.virtualKey)
         end
@@ -7128,7 +6919,6 @@ local function tapSprintKey(keyName)
         local upOk = pcall(function()
             virtualInput:SendKeyEvent(false, keyInfo.keyCode, false, game)
         end)
-        -- A release is attempted even if the press call reports an error.
         if not upOk then
             pcall(function()
                 virtualInput:SendKeyEvent(false, keyInfo.keyCode, false, game)
@@ -7140,7 +6930,6 @@ local function tapSprintKey(keyName)
 end
 
 local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
-    -- Invalidate any pending tap loop from a previous enable/disable cycle.
     sprintTapToken += 1
     local thisToken = sprintTapToken
 
@@ -7175,9 +6964,6 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
         local moving = humanoid.MoveDirection.Magnitude > 0.05
         local speed = humanoid.WalkSpeed
 
-        -- Prefer explicit game-provided sprint flags when the experience exposes
-        -- them. Attribute/value names vary between YBA builds, so check common
-        -- names on the player, character and humanoid before using WalkSpeed.
         local function readSprintFlag(container)
             if not container then return nil end
             for _, name in ipairs({"IsSprinting", "Sprinting", "IsRunning", "Running", "SprintingEnabled"}) do
@@ -7190,14 +6976,11 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
             return nil
         end
         local gameSprintState
-        -- Re-check in priority order so an explicit false is preserved.
         local explicitSprintState = readSprintFlag(character)
         if explicitSprintState == nil then explicitSprintState = readSprintFlag(player) end
         if explicitSprintState == nil then explicitSprintState = readSprintFlag(humanoid) end
         gameSprintState = explicitSprintState
 
-        -- When a game flag exists, trust it even if WalkSpeed stays elevated
-        -- during block recovery. Otherwise use the usual YBA speed threshold.
         local running
         if gameSprintState ~= nil then
             running = gameSprintState
@@ -7210,15 +6993,11 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
             wasRunning = true
             walkSince = nil
         elseif walkingWhileMoving then
-            -- Start a fresh recovery window whenever sprint drops back to walk.
-            -- Use a very short settle window so sprint resumes promptly after
-            -- block recovery, while still avoiding input during low-speed locks.
             if wasRunning or walkSince == nil then
                 walkSince = os.clock()
             end
             wasRunning = false
         else
-            -- Not moving or movement is locked; wait for movement to recover.
             walkSince = nil
             if speed < 5 then wasRunning = false end
         end
@@ -7230,8 +7009,6 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
         local now = os.clock()
         local elapsedWalking = now - walkSince
         local sinceAttempt = now - lastAttempt
-        -- Tap as soon as walking returns, then retry quickly only while
-        -- WalkSpeed still indicates sprint failed.
         if elapsedWalking >= 0.03 and sinceAttempt >= retryDelay then
             lastAttempt = now
             tapInProgress = true
@@ -7261,6 +7038,648 @@ autoSprintMod.cycle("Run Key", sprintKeyOptions, sprintKeyIndex, function(index)
     end
 end)
 
+;(function()
+    ------------------------------------------------------------------
+    -- Freelook camera.
+    ------------------------------------------------------------------
+    local freelookActive = false
+    local freelookSaved = nil
+    local freelookActiveCamera = nil
+    local freelookYaw = 0
+    local freelookPitch = -0.15
+    local freelookDistance = 10
+    local freelookSensitivity = 1
+    local freelookFocusHeight = 2.2
+    local freelookRenderBound = false
+    local freelookInputConnection = nil
+    local freelookPendingDelta = Vector2.zero
+    local freelookTrackedHumanoids = {}
+    local freelookRootYaw = {}
+
+    local function trackFreelookHumanoid(humanoid)
+        if not humanoid then return end
+        if freelookTrackedHumanoids[humanoid] == nil then
+            freelookTrackedHumanoids[humanoid] = humanoid.AutoRotate
+        end
+        if humanoid.AutoRotate then
+            pcall(function() humanoid.AutoRotate = false end)
+        end
+    end
+
+    local function stopFreelook()
+        freelookActive = false
+        freelookPendingDelta = Vector2.zero
+        for humanoid, originalAutoRotate in pairs(freelookTrackedHumanoids) do
+            if humanoid and humanoid.Parent then
+                pcall(function() humanoid.AutoRotate = originalAutoRotate end)
+            end
+        end
+        table.clear(freelookTrackedHumanoids)
+        if freelookInputConnection then
+            pcall(function() freelookInputConnection:Disconnect() end)
+            freelookInputConnection = nil
+        end
+        if freelookRenderBound then
+            pcall(function() RunService:UnbindFromRenderStep("TrueSightFreelook") end)
+            freelookRenderBound = false
+        end
+        if freelookSaved then
+            local savedCamera = freelookSaved.cameraRef
+            if savedCamera then
+                pcall(function()
+                    savedCamera.CameraType = freelookSaved.cameraType or Enum.CameraType.Custom
+                    if freelookSaved.cameraSubject and freelookSaved.cameraSubject.Parent then
+                        savedCamera.CameraSubject = freelookSaved.cameraSubject
+                    end
+                    if freelookSaved.fieldOfView then savedCamera.FieldOfView = freelookSaved.fieldOfView end
+                end)
+            end
+            local currentCamera = cam()
+            if currentCamera and currentCamera ~= savedCamera then
+                pcall(function()
+                    currentCamera.CameraType = Enum.CameraType.Custom
+                    local character = player.Character
+                    local hum = character and character:FindFirstChildOfClass("Humanoid")
+                    if hum then currentCamera.CameraSubject = hum end
+                end)
+            end
+            pcall(function() UserInputService.MouseBehavior = freelookSaved.mouseBehavior end)
+            pcall(function() UserInputService.MouseIconEnabled = freelookSaved.mouseIconEnabled end)
+        else
+            pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.Default end)
+            pcall(function() UserInputService.MouseIconEnabled = true end)
+        end
+        freelookSaved = nil
+        freelookActiveCamera = nil
+    end
+
+    local function startFreelook()
+        if freelookActive then
+            stopFreelook()
+            return
+        end
+        if freelookInputConnection then
+            pcall(function() freelookInputConnection:Disconnect() end)
+            freelookInputConnection = nil
+        end
+        if freelookRenderBound then
+            pcall(function() RunService:UnbindFromRenderStep("TrueSightFreelook") end)
+            freelookRenderBound = false
+        end
+        local camera = cam()
+        if not camera then
+            if notifyConfig then notifyConfig("Freelook: camera is unavailable", true) end
+            return
+        end
+        local look = camera.CFrame.LookVector
+        freelookSaved = {
+            cameraRef = camera,
+            cameraType = camera.CameraType,
+            cameraSubject = camera.CameraSubject,
+            fieldOfView = camera.FieldOfView,
+            mouseBehavior = UserInputService.MouseBehavior,
+            mouseIconEnabled = UserInputService.MouseIconEnabled,
+        }
+        freelookActiveCamera = camera
+        freelookYaw = math.atan2(look.X, -look.Z)
+        freelookPitch = math.clamp(math.asin(math.clamp(look.Y, -1, 1)), math.rad(-58), math.rad(48))
+        freelookPendingDelta = Vector2.zero
+        table.clear(freelookTrackedHumanoids)
+        table.clear(freelookRootYaw)
+        local initialCharacter = player.Character
+        local initialHumanoid = initialCharacter and initialCharacter:FindFirstChildOfClass("Humanoid")
+        trackFreelookHumanoid(initialHumanoid)
+        freelookActive = true
+        pcall(function() camera.CameraType = Enum.CameraType.Scriptable end)
+
+        freelookInputConnection = UserInputService.InputChanged:Connect(function(input)
+            if not freelookActive then return end
+            if input.UserInputType == Enum.UserInputType.MouseWheel and not clickGui.Visible then
+                freelookDistance = math.clamp(freelookDistance - input.Position.Z * 1.25, 5, 26)
+            end
+        end)
+
+        local bound = pcall(function()
+            RunService:BindToRenderStep("TrueSightFreelook", Enum.RenderPriority.Camera.Value + 1, function()
+                if not freelookActive then return end
+                local currentCamera = cam()
+                if not currentCamera then return end
+                if currentCamera ~= freelookActiveCamera then
+                    freelookActiveCamera = currentCamera
+                end
+                if currentCamera.CameraType ~= Enum.CameraType.Scriptable then
+                    pcall(function() currentCamera.CameraType = Enum.CameraType.Scriptable end)
+                end
+                local character = player.Character
+                local root = character and character:FindFirstChild("HumanoidRootPart")
+                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+                trackFreelookHumanoid(humanoid)
+                if not root or (humanoid and humanoid.Health <= 0) then
+                    if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+                        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+                    end
+                    if not UserInputService.MouseIconEnabled then UserInputService.MouseIconEnabled = true end
+                    return
+                end
+
+                local heldYaw = freelookRootYaw[root]
+                if heldYaw == nil then
+                    local _, currentYaw = root.CFrame:ToOrientation()
+                    heldYaw = currentYaw
+                    freelookRootYaw[root] = heldYaw
+                else
+                    local position = root.Position
+                    local heldRoot = CFrame.new(position) * CFrame.Angles(0, heldYaw, 0)
+                    if (root.CFrame.LookVector - heldRoot.LookVector).Magnitude > 0.002 then
+                        pcall(function() root.CFrame = heldRoot end)
+                    end
+                end
+
+                local delta = Vector2.zero
+                if clickGui.Visible then
+                    if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+                        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+                    end
+                    if not UserInputService.MouseIconEnabled then UserInputService.MouseIconEnabled = true end
+                    freelookPendingDelta = Vector2.zero
+                else
+                    if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
+                        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+                    end
+                    if UserInputService.MouseIconEnabled then UserInputService.MouseIconEnabled = false end
+                    local ok, mouseDelta = pcall(function() return UserInputService:GetMouseDelta() end)
+                    if ok and typeof(mouseDelta) == "Vector2" then delta = mouseDelta end
+                    local sensitivity = 0.0024 * freelookSensitivity
+                    freelookYaw += delta.X * sensitivity
+                    freelookPitch = math.clamp(freelookPitch - delta.Y * sensitivity, math.rad(-58), math.rad(48))
+                end
+
+                local focus = root.Position + Vector3.new(0, freelookFocusHeight, 0)
+                local cp = math.cos(freelookPitch)
+                local lookDirection = Vector3.new(
+                    math.sin(freelookYaw) * cp,
+                    math.sin(freelookPitch),
+                    -math.cos(freelookYaw) * cp
+                )
+                currentCamera.CFrame = CFrame.lookAt(focus - lookDirection * freelookDistance, focus, Vector3.yAxis)
+                currentCamera.Focus = CFrame.new(focus)
+            end)
+        end)
+        freelookRenderBound = bound
+        if not bound then
+            stopFreelook()
+            if notifyConfig then notifyConfig("Freelook couldn't bind camera updates", true) end
+        end
+    end
+
+    local freelookMod = addModule(clientPanel, "Freelook Camera", function(on)
+        if on then startFreelook() else stopFreelook() end
+    end)
+    freelookMod.keybind = Enum.KeyCode.LeftAlt
+    freelookMod.refreshBindButton()
+    freelookMod.slider("Sensitivity", 0.4, 2.5, 1, 0.1, function(value)
+        freelookSensitivity = value
+    end)
+    freelookMod.slider("Orbit Distance", 5, 26, 10, 1, function(value)
+        freelookDistance = value
+    end)
+    freelookMod.slider("Focus Height", 1, 4, 2.2, 0.1, function(value)
+        freelookFocusHeight = value
+    end)
+
+
+    ------------------------------------------------------------------
+    -- Independent Shift-Lock Camera Centering.
+    ------------------------------------------------------------------
+    ;(function()
+        local centerRenderBound = false
+        local centerTargetHeight = 1.35
+        local centerStrength = 1.0
+        local centerModule
+
+        local function centerCameraStep()
+            if not centerModule or not centerModule.enabled then return end
+            if clickGui.Visible then return end
+            if freelookMod and freelookMod.enabled then return end
+            if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then return end
+
+            local camera = cam()
+            if not camera or camera.CameraType == Enum.CameraType.Scriptable then return end
+            local character = player.Character
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if not root or (humanoid and humanoid.Health <= 0) then return end
+
+            local viewport = camera.ViewportSize
+            if viewport.X < 1 or viewport.Y < 1 then return end
+            local target = root.Position + Vector3.new(0, centerTargetHeight, 0)
+            local projected = camera:WorldToViewportPoint(target)
+            if projected.Z <= 0 then return end
+
+            local deltaX = projected.X - viewport.X * 0.5
+            local deltaY = projected.Y - viewport.Y * 0.5
+            if math.abs(deltaX) < 0.4 and math.abs(deltaY) < 0.4 then return end
+
+            local distance = math.max(1, (camera.CFrame.Position - target).Magnitude)
+            local studsPerPixel = (2 * distance * math.tan(math.rad(camera.FieldOfView) * 0.5)) / viewport.Y
+            local shift = (camera.CFrame.RightVector * deltaX - camera.CFrame.UpVector * deltaY)
+                * studsPerPixel * centerStrength
+            local maxShift = 2.5
+            if shift.Magnitude > maxShift then shift = shift.Unit * maxShift end
+
+            camera.CFrame = camera.CFrame + shift
+            camera.Focus = camera.Focus + shift
+        end
+
+        local function enableCentering()
+            if centerRenderBound then
+                pcall(function() RunService:UnbindFromRenderStep("TrueSightShiftLockCentering") end)
+                centerRenderBound = false
+            end
+            local ok = pcall(function()
+                RunService:BindToRenderStep(
+                    "TrueSightShiftLockCentering",
+                    Enum.RenderPriority.Camera.Value + 2,
+                    centerCameraStep
+                )
+            end)
+            centerRenderBound = ok
+            if not ok and notifyConfig then
+                notifyConfig("Shift-Lock Camera Centering couldn't bind", true)
+            end
+        end
+
+        local function disableCentering()
+            if centerRenderBound then
+                pcall(function() RunService:UnbindFromRenderStep("TrueSightShiftLockCentering") end)
+                centerRenderBound = false
+            end
+        end
+
+        centerModule = addModule(clientPanel, "Shift-Lock Camera Centering", function(on)
+            if on then enableCentering() else disableCentering() end
+        end)
+        centerModule.slider("Target Height", 0.6, 2.4, centerTargetHeight, 0.1, function(value)
+            centerTargetHeight = value
+        end)
+        centerModule.slider("Center Strength", 0.25, 1, centerStrength, 0.05, function(value)
+            centerStrength = value
+        end)
+    end)()
+    table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
+        if not processed or clickGui.Visible or UserInputService:GetFocusedTextBox() then return end
+        if freelookMod.keybind and input.KeyCode == freelookMod.keybind then
+            freelookMod.set(not freelookMod.enabled)
+        end
+    end))
+
+    ------------------------------------------------------------------
+    -- Spec Tool Quick Use.
+    ;(function()
+        local ContextActionService = game:GetService("ContextActionService")
+        local specAutoMod
+        local specBound = false
+        local specSkillsFolder
+        local specDetectedName = "Unknown"
+        local specSequenceBusy = false
+        local specCaptureSlot, specCaptureStage
+        local specEquipDelay, specRestoreDelay = 0.22, 0.16
+        local specTriggerKeys, specMoveKeys = {}, {}
+        local specTriggerMap, specReplayGuard, specBindButtons = {}, {}, {}
+        local specActionName = "TrueSight_AutoSpecMoveTool"
+        local lastSpecNotice = ""
+        local bindSpecKeys, refreshSpecBindButtons
+
+        local function findPlayerRig()
+            local living = workspace:FindFirstChild("Living")
+            return (living and living:FindFirstChild(player.Name, true))
+                or workspace:FindFirstChild(player.Name, true)
+                or player.Character
+        end
+
+        local function findSpecSkills()
+            local rig = findPlayerRig()
+            return rig and rig:FindFirstChild("SpecSkills", true) or nil
+        end
+
+        local function normalizeSpecName(value)
+            if typeof(value) == "EnumItem" then value = value.Name end
+            if type(value) ~= "string" then return nil end
+            value = value:gsub("^%s+", ""):gsub("%s+$", "")
+            if value == "" or value:match("^Enum%.KeyCode%.") then return nil end
+            return value
+        end
+
+        local function refreshSpecIdentity()
+            specSkillsFolder = findSpecSkills()
+            specDetectedName = "Unknown"
+            local rig = findPlayerRig()
+            local sources = {rig, player.Character, player}
+            local keys = {"SpecName", "Spec", "FightingStyle", "FightingStyleName", "StyleName"}
+            for _, source in ipairs(sources) do
+                if source then
+                    for _, key in ipairs(keys) do
+                        local ok, value = pcall(function() return source:GetAttribute(key) end)
+                        local name = ok and normalizeSpecName(value) or nil
+                        if name then specDetectedName = name return end
+                    end
+                end
+            end
+            if rig then
+                for _, obj in ipairs(rig:GetDescendants()) do
+                    if obj ~= specSkillsFolder and not (specSkillsFolder and obj:IsDescendantOf(specSkillsFolder)) then
+                        local n = string.lower(obj.Name)
+                        if (string.find(n, "specname", 1, true) or string.find(n, "fightingstyle", 1, true)
+                            or n == "spec" or n == "stylename") and obj:IsA("ValueBase") then
+                            local name = normalizeSpecName(obj.Value)
+                            if name then specDetectedName = name return end
+                        end
+                    end
+                end
+            end
+            local character = player.Character
+            local backpack = player:FindFirstChildOfClass("Backpack")
+            for _, container in ipairs({character, backpack}) do
+                if container then
+                    for _, item in ipairs(container:GetChildren()) do
+                        if item:IsA("Tool") then
+                            local n = string.lower(item.Name)
+                            if string.find(n, "boxing", 1, true) or string.find(n, "hamon", 1, true)
+                                or string.find(n, "clacker", 1, true) or string.find(n, "spin", 1, true)
+                                or string.find(n, "steel ball", 1, true) or string.find(n, "pluck", 1, true)
+                                or string.find(n, "vampire", 1, true) or string.find(n, "spec", 1, true) then
+                                specDetectedName = item.Name
+                                return
+                            end
+                        end
+                    end
+                end
+            end
+            if specSkillsFolder then specDetectedName = "Spec detected (name unavailable)" end
+        end
+
+        local function virtualKeyForEnum(keyCode)
+            local name = keyCode and keyCode.Name or ""
+            if #name == 1 and string.match(name, "^[A-Z0-9]$") then return string.byte(name) end
+            local digitCodes = {Zero = 0x30, One = 0x31, Two = 0x32, Three = 0x33, Four = 0x34,
+                Five = 0x35, Six = 0x36, Seven = 0x37, Eight = 0x38, Nine = 0x39}
+            if digitCodes[name] then return digitCodes[name] end
+            local asciiKeys = {Space = 0x20, Minus = 0xBD, Equals = 0xBB, Comma = 0xBC, Period = 0xBE}
+            return asciiKeys[name]
+        end
+
+        local function replayMoveKey(keyCode)
+            local virtualKey = virtualKeyForEnum(keyCode)
+            if not virtualKey or not keyCode then return false end
+            specReplayGuard[keyCode] = true
+            local downOk, upOk = false, false
+            if type(keypress) == "function" and type(keyrelease) == "function" then
+                local okDown, resultDown = pcall(keypress, virtualKey)
+                downOk = okDown and resultDown ~= false
+                if downOk then
+                    task.wait(0.045)
+                    local okUp, resultUp = pcall(keyrelease, virtualKey)
+                    upOk = okUp and resultUp ~= false
+                end
+            end
+            if not (downOk and upOk) then
+                local serviceOk, vim = pcall(function() return game:GetService("VirtualInputManager") end)
+                if serviceOk and vim then
+                    local okDown, resultDown = pcall(function() return vim:SendKeyEvent(true, keyCode, false, game) end)
+                    downOk = okDown and resultDown ~= false
+                    if downOk then
+                        task.wait(0.045)
+                        local okUp, resultUp = pcall(function() return vim:SendKeyEvent(false, keyCode, false, game) end)
+                        upOk = okUp and resultUp ~= false
+                    end
+                end
+            end
+            task.delay(0.14, function() specReplayGuard[keyCode] = nil end)
+            return downOk and upOk
+        end
+
+        local function showSpecNotice(message)
+            if message == lastSpecNotice then return end
+            lastSpecNotice = message
+            hint.Text = message
+            if notifyConfig then notifyConfig(message, true) end
+        end
+
+        local function runSpecKeySequence(moveKeyCode)
+            if specSequenceBusy then return end
+            local character = player.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if not character or not humanoid or humanoid.Health <= 0 then
+                showSpecNotice("Spec Tool Quick Use: character is not ready")
+                return
+            end
+            specSequenceBusy = true
+            task.spawn(function()
+                local ok, err = pcall(function()
+                    if not replayMoveKey(Enum.KeyCode.One) then error("could not select hotbar slot 1") end
+                    if player.Character ~= character then error("character changed while equipping") end
+                    local equipDeadline = os.clock() + specEquipDelay
+                    local equippedTool = character:FindFirstChildOfClass("Tool")
+                    while not equippedTool and os.clock() < equipDeadline and player.Character == character do
+                        task.wait(0.01)
+                        equippedTool = character:FindFirstChildOfClass("Tool")
+                    end
+                    if player.Character ~= character then error("character changed while equipping") end
+                    if not equippedTool then error("no Tool equipped in slot 1; check your hotbar") end
+                    -- A short settle time lets the game's tool scripts initialise before the move key.
+                    task.wait(0.04)
+                    if not replayMoveKey(moveKeyCode) then error("could not send move key " .. moveKeyCode.Name) end
+                    task.wait(specRestoreDelay)
+                    if player.Character == character then
+                        if not replayMoveKey(Enum.KeyCode.One) then error("could not send slot 1 put-away input") end
+                    end
+                    hint.Text = "Spec Tool Quick Use: slot 1 → " .. moveKeyCode.Name .. " → slot 1"
+                end)
+                specSequenceBusy = false
+                if not ok then showSpecNotice("Spec Tool Quick Use: " .. tostring(err)) else lastSpecNotice = "" end
+            end)
+        end
+
+        local function enumKeyFromName(name)
+            local keyName = tostring(name or "")
+            local mappedDigits = {["1"] = "One", ["2"] = "Two", ["3"] = "Three", ["4"] = "Four",
+                ["5"] = "Five", ["6"] = "Six", ["7"] = "Seven", ["8"] = "Eight", ["9"] = "Nine"}
+            keyName = mappedDigits[keyName] or keyName
+            local ok, keyCode = pcall(function() return Enum.KeyCode[keyName] end)
+            if ok and keyCode and keyCode ~= Enum.KeyCode.Unknown then return keyCode end
+            return nil
+        end
+
+        local function rebuildTriggerMap()
+            table.clear(specTriggerMap)
+            local count = 0
+            for i = 1, 4 do
+                local moveKey = specMoveKeys[i]
+                if moveKey and not specTriggerMap[moveKey] then
+                    specTriggerKeys[i] = moveKey
+                    specTriggerMap[moveKey] = {moveKey = moveKey, slot = i}
+                    count += 1
+                end
+            end
+            return count
+        end
+
+        local function specActionCallback(_, inputState, inputObject)
+            if inputState ~= Enum.UserInputState.Begin or not inputObject then return Enum.ContextActionResult.Pass end
+            local triggerKey = inputObject.KeyCode
+            if specReplayGuard[triggerKey] or specSequenceBusy or specCaptureSlot then return Enum.ContextActionResult.Pass end
+            if not specAutoMod or not specAutoMod.enabled or UserInputService:GetFocusedTextBox() then
+                return Enum.ContextActionResult.Pass
+            end
+            local mapping = specTriggerMap[triggerKey]
+            if not mapping then return Enum.ContextActionResult.Pass end
+            hint.Text = "Spec " .. specDetectedName .. ": slot 1 → " .. mapping.moveKey.Name .. " → slot 1"
+            runSpecKeySequence(mapping.moveKey)
+            return Enum.ContextActionResult.Sink
+        end
+
+        local function unbindSpecKeys()
+            pcall(function() ContextActionService:UnbindAction(specActionName) end)
+            specBound = false
+        end
+
+        bindSpecKeys = function()
+            unbindSpecKeys()
+            if not specAutoMod or not specAutoMod.enabled then return end
+            refreshSpecIdentity()
+            local count = rebuildTriggerMap()
+            if refreshSpecBindButtons then refreshSpecBindButtons() end
+            if count == 0 then
+                showSpecNotice("Spec Tool Quick Use: click Bind Move, then press that move's actual key")
+                return
+            end
+            local actionKeys = {}
+            for keyCode in pairs(specTriggerMap) do table.insert(actionKeys, keyCode) end
+            local ok = pcall(function()
+                ContextActionService:BindActionAtPriority(specActionName, specActionCallback, false,
+                    Enum.ContextActionPriority.High.Value + 10, table.unpack(actionKeys))
+            end)
+            if not ok then
+                showSpecNotice("Spec Tool Quick Use: couldn't bind trigger keys")
+                return
+            end
+            specBound = true
+            hint.Text = "Spec detected: " .. specDetectedName .. " | " .. tostring(count) .. " manual move bind(s)"
+            lastSpecNotice = ""
+        end
+
+        local specBindInfo = Instance.new("TextLabel")
+        specBindInfo.Name = "SpecToolBindInfo"
+        specBindInfo.LayoutOrder = 3
+        specBindInfo.Size = UDim2.new(1, 0, 0, 40)
+        specBindInfo.BackgroundTransparency = 1
+        specBindInfo.Font = FONT
+        specBindInfo.TextSize = 10
+        specBindInfo.TextColor3 = DIM
+        specBindInfo.TextWrapped = true
+        specBindInfo.TextXAlignment = Enum.TextXAlignment.Left
+        specBindInfo.Text = "SpecSkills is used only to identify your spec. Each move has one key: click Bind Move, then press the actual in-game move key. That same key triggers 1 → move key → 1."
+        specBindInfo.Parent = nil
+
+        specAutoMod = addModule(clientPanel, "Spec Tool Quick Use", function(on)
+            if on then bindSpecKeys() else unbindSpecKeys() end
+        end)
+        specBindInfo.Parent = specAutoMod.settings
+
+        refreshSpecBindButtons = function()
+            for i, button in ipairs(specBindButtons) do
+                local move = specMoveKeys[i] and specMoveKeys[i].Name or "Set move key"
+                if specCaptureSlot == i then
+                    button.Text = "Move " .. tostring(i) .. " | PRESS MOVE KEY (Esc cancels)"
+                else
+                    button.Text = "Bind Move " .. tostring(i) .. "  |  " .. move
+                end
+            end
+        end
+
+        for index = 1, 4 do
+            local slot = index
+            local button = Instance.new("TextButton")
+            button.Name = "SpecMoveTrigger" .. tostring(slot)
+            button.LayoutOrder = 3 + slot
+            button.Size = UDim2.new(1, 0, 0, 31)
+            styleButton(button)
+            button.TextSize = 11
+            button.TextWrapped = true
+            button:SetAttribute("TrueSightRole", "sub")
+            button.Parent = specAutoMod.settings
+            specBindButtons[slot] = button
+            button.MouseButton1Click:Connect(function()
+                specCaptureSlot, specCaptureStage = slot, 1
+                unbindSpecKeys()
+                refreshSpecBindButtons()
+                hint.Text = "Spec Tool Quick Use: press the actual move key for move " .. tostring(slot)
+            end)
+            registerConfig("Spec Tool Quick Use/MoveKey" .. tostring(slot), function()
+                return specMoveKeys[slot] and specMoveKeys[slot].Name or ""
+            end, function(value)
+                local key = enumKeyFromName(value)
+                specMoveKeys[slot] = key
+                specTriggerKeys[slot] = key
+                if refreshSpecBindButtons then refreshSpecBindButtons() end
+                if specAutoMod and specAutoMod.enabled then bindSpecKeys() end
+            end)
+        end
+
+        refreshSpecBindButtons()
+        table.insert(connections, UserInputService.InputBegan:Connect(function(input)
+            local slot = specCaptureSlot
+            if not slot or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            local captured = input.KeyCode
+            if captured == Enum.KeyCode.Escape then
+                specCaptureSlot, specCaptureStage = nil, nil
+                refreshSpecBindButtons()
+                if specAutoMod and specAutoMod.enabled then bindSpecKeys() end
+                hint.Text = "Spec Tool Quick Use: binding cancelled"
+                return
+            end
+            if captured == Enum.KeyCode.Unknown or captured == Enum.KeyCode.Backspace then
+                specMoveKeys[slot], specTriggerKeys[slot] = nil, nil
+            else
+                if captured == Enum.KeyCode.One or captured == keyUiState.menuKey then
+                    hint.Text = "Spec Tool Quick Use: choose a move key other than 1 or the menu key"
+                    return
+                end
+                specMoveKeys[slot], specTriggerKeys[slot] = captured, captured
+            end
+            specCaptureSlot, specCaptureStage = nil, nil
+            refreshSpecBindButtons()
+            requestSave()
+            if specAutoMod and specAutoMod.enabled then bindSpecKeys() end
+            hint.Text = "Spec Tool Quick Use: move key saved; the same key triggers 1 → move key → 1"
+        end))
+
+        specAutoMod.slider("Equip Wait", 0.08, 0.60, 0.22, 0.02, function(value)
+            specEquipDelay = value
+        end)
+        specAutoMod.slider("Put-Away Delay", 0.08, 0.45, 0.16, 0.02, function(value)
+            specRestoreDelay = value
+        end)
+
+        table.insert(connections, player.CharacterAdded:Connect(function()
+            specSkillsFolder = nil
+            task.delay(0.8, function()
+                refreshSpecIdentity()
+                if specAutoMod and specAutoMod.enabled then bindSpecKeys() end
+            end)
+        end))
+        table.insert(connections, workspace.DescendantAdded:Connect(function(instance)
+            if instance.Name == "SpecSkills" or instance.Name == player.Name then
+                task.delay(0.3, function()
+                    refreshSpecIdentity()
+                    if specAutoMod and specAutoMod.enabled then bindSpecKeys() end
+                end)
+            end
+        end))
+        task.delay(1.0, refreshSpecIdentity)
+    end)()
+end)()
+
 keyUiState.updateKeyUi = function()
     if keyUiState.bindingModule then
         keyUiState.keyBtn.Text = "   Binding: " .. keyUiState.bindingModule.name .. "  (Esc cancels)"
@@ -7289,12 +7708,10 @@ end)
 
 local rejoinButton
 rejoinButton = addAction(clientPanel, "Rejoin Server", function()
-    -- Try to return to this exact server instance first.
     local ok = pcall(function()
         TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
     end)
 
-    -- If the current instance cannot be rejoined, try joining the same place.
     if not ok then
         pcall(function()
             TeleportService:Teleport(game.PlaceId, player)
@@ -7302,8 +7719,6 @@ rejoinButton = addAction(clientPanel, "Rejoin Server", function()
     end
 end)
 
--- Extra client QoL features
--- Anti-AFK: sends a harmless right-click input when Roblox reports idle.
 local antiAfkConn
 local antiAfkMod = addModule(clientPanel, "Anti-AFK", function(on)
     if antiAfkConn then antiAfkConn:Disconnect(); antiAfkConn = nil end
@@ -7329,6 +7744,11 @@ end)()
 -- Input handling
 ------------------------------------------------------------------
 table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
+    if keyUiState.specCapturedKey then
+        local captured = keyUiState.specCapturedKey
+        keyUiState.specCapturedKey = nil
+        if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == captured then return end
+    end
     if keyUiState.bindingModule then
         if input.UserInputType == Enum.UserInputType.Keyboard then
             if input.KeyCode ~= Enum.KeyCode.Escape then
@@ -7386,9 +7806,6 @@ table.insert(connections, UserInputService.InputChanged:Connect(function(input)
         resize.target.Size = UDim2.fromOffset(w, h)
     elseif dragTarget then
         local delta = input.Position - dragStartMouse
-        -- Preserve the element's original Scale components and add deltas only
-        -- to its Offset components. This keeps dragging in parent-local space and
-        -- prevents the release snap/clamp jump caused by using screen coordinates.
         local startPosition = dragStartPos and dragStartPos.position or dragTarget.Position
         dragTarget.Position = UDim2.new(
             startPosition.X.Scale, startPosition.X.Offset + delta.X,
@@ -7414,7 +7831,6 @@ table.insert(connections, UserInputService.InputEnded:Connect(function(input)
     end
 end))
 
--- Keep cosmetics after respawn
 table.insert(connections, player.CharacterAdded:Connect(function(character)
     table.clear(ghostTimes)
     table.clear(ghostPos)
@@ -7457,7 +7873,6 @@ modules._unloadCleanup = function()
         pcall(function() chatConfigConnection:Disconnect() end)
         chatConfigConnection = nil
     end
-    -- save the current state first, then stop auto-saving while modules switch off
     if saveConfig then saveConfig() end
     configLoading = true
     for i = #modules, 1, -1 do
@@ -7473,6 +7888,9 @@ modules._unloadCleanup = function()
         sprintConn = nil
     end
     pcall(function() RunService:UnbindFromRenderStep("TrueSightFOV") end)
+    pcall(function() RunService:UnbindFromRenderStep("TrueSightFreelook") end)
+    pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.Default end)
+    pcall(function() UserInputService.MouseIconEnabled = true end)
 
     removeHat()
     removeTrail()
@@ -7523,8 +7941,6 @@ local function normalizeProfileName(value)
     return string.sub(safe, 1, 24)
 end
 
--- Prefer flat files as the canonical paths. They do not depend on the
--- executor correctly supporting folders across separate script executions.
 local function profilePath(profile)
     if profile == "default" then return "TrueSightConfig.json" end
     return "TrueSight_" .. profile .. ".json"
@@ -7534,9 +7950,6 @@ local function readConfig(profileName)
     local profile = normalizeProfileName(profileName or currentProfile)
     if profile == "" or not canFile then return nil end
 
-    -- Try both folder and flat-file layouts. Some executor environments expose
-    -- makefolder/isfolder differently between sessions, so relying on one path
-    -- can make a valid selected profile look like it was never saved.
     local paths = {}
     local seen = {}
     local function addPath(path)
@@ -7557,9 +7970,6 @@ local function readConfig(profileName)
     end
 
     for _, path in ipairs(paths) do
-        -- Do not gate readfile behind isfile(): some executors report false for
-        -- valid paths or implement isfile inconsistently. A protected read is
-        -- a more reliable existence check.
         local ok, data = pcall(function()
             return HttpService:JSONDecode(readfile(path))
         end)
@@ -7568,8 +7978,6 @@ local function readConfig(profileName)
     return nil
 end
 
--- Canonical auto-load marker and self-contained snapshot are flat files so
--- executors can reuse them across separate executions.
 local AUTOLOAD_PATH = "TrueSightAutoLoad.txt"
 local STARTUP_CONFIG_PATH = "TrueSightStartupConfig.json"
 local AUTOLOAD_MARKER_PATHS = {AUTOLOAD_PATH, "TrueSight/autoload.txt"}
@@ -7584,8 +7992,6 @@ end
 
 local function parseAutoLoadMarker(value)
     if type(value) ~= "string" then return nil, 0 end
-    -- New format is "profile|timestamp"; plain profile names from older script
-    -- versions remain supported and are treated as older than timestamped data.
     local rawProfile, rawStamp = string.match(value, "^(.-)|(%d+)$")
     if not rawProfile then rawProfile = value end
     local profile = normalizeProfileName(rawProfile)
@@ -7593,8 +7999,6 @@ local function parseAutoLoadMarker(value)
     return profile, tonumber(rawStamp) or 0
 end
 
--- Read every marker and select the most recently written one. This also allows
--- an alternate path to work if a particular executor blocks one file location.
 local function readAutoLoadMarker()
     if not canFile then return nil, 0 end
     local bestProfile, bestStamp = nil, -1
@@ -7629,8 +8033,6 @@ local function getAutoLoadSelection()
     local markerProfile, markerStamp = readAutoLoadMarker()
     local _, snapshotProfile, snapshotStamp = readStartupSnapshot()
 
-    -- Timestamp comparison prevents a stale marker or stale snapshot from
-    -- undoing a newer selection. On ties, prefer the marker (legacy scripts).
     if snapshotProfile and snapshotStamp > markerStamp then
         return snapshotProfile, snapshotStamp, "snapshot"
     end
@@ -7656,7 +8058,6 @@ local function setAutoLoadProfile(profileName)
     local profile = normalizeProfileName(profileName or "default")
     if profile == "" then return false end
 
-    -- Validate the named profile before making it the startup selection.
     local data = readConfig(profile)
     if type(data) ~= "table" then return false end
 
@@ -7669,9 +8070,6 @@ local function setAutoLoadProfile(profileName)
     end)
     if not encodedOk then return false end
 
-    -- Write the same timestamped selection to both files. At next startup the
-    -- newest successful write wins, even if one path failed and contains an
-    -- older profile name.
     local markerValue = profile .. "|" .. tostring(selectedAt)
     local markerOk = false
     for _, path in ipairs(AUTOLOAD_MARKER_PATHS) do
@@ -7716,8 +8114,6 @@ saveConfig = function(profileName)
         if ok then data.values[key] = v end
     end
     for title, panel in pairs(panelRegistry) do
-        -- Keep Config aligned to the current screen edge instead of restoring
-        -- a stale pixel coordinate from another screen resolution.
         if title ~= "Config" then
             data.panels[title] = {
                 x = panel.Position.X.Offset,
@@ -7764,8 +8160,6 @@ saveConfig = function(profileName)
         if writeOk then
             local verifyOk, contents = pcall(readfile, path)
             if verifyOk and contents == encoded then
-                -- Keep the self-contained startup copy in sync whenever the
-                -- currently selected auto-load profile is saved/auto-saved.
                 local selectedOk, selectedProfile, selectedStamp = pcall(function()
                     return getAutoLoadSelection()
                 end)
@@ -7797,8 +8191,6 @@ local function applyConfig(data)
             pcall(setAccentIndex, data.accent)
         end
 
-        -- Restore setting values before enabling modules, so each module starts
-        -- using the saved configuration rather than its default settings.
         if type(data.values) == "table" then
             for key, value in pairs(data.values) do
                 local entry = configEntries[key]
@@ -7877,7 +8269,6 @@ local function applyConfig(data)
     return applied
 end
 
--- Persistent on-screen feedback for config commands and saves.
 local configNotice
 local configNoticeToken = 0
 
@@ -7930,8 +8321,6 @@ local function flash(btn, text, base)
     end)
 end
 
--- A separate Config panel keeps save/load controls visible regardless of the
--- number of Client options or whether the Client panel is obscured/off-screen.
 local viewportWidth = (cam() and cam().ViewportSize.X) or clickGui.AbsoluteSize.X
 local configPanel = makePanel("Config", math.max(8, viewportWidth - 197))
 
@@ -7971,7 +8360,6 @@ profileInput = addTextInput(configPanel, "Config Profile",
         end
     end)
 profileInput.LayoutOrder = 3
--- Save Profile button removed: Save Config writes the currently selected profile.
 local loadProfileBtn
 loadProfileBtn = addAction(configPanel, "Load Profile", function()
     local profile = normalizeProfileName(profileInput.Text)
@@ -8010,8 +8398,6 @@ end)
 autoLoadBtn.LayoutOrder = 6
 refreshAutoLoadButton()
 
--- Chat shortcuts: /config save, /config load, /config save <profile>,
--- /config load <profile>. Chat messages are handled locally by this script.
 pcall(function()
     chatConfigConnection = player.Chatted:Connect(function(message)
         local command, profile = string.match(message, "^%s*/config%s+(%S+)%s*(.-)%s*$")
@@ -8040,25 +8426,15 @@ end)
 
 addAction(clientPanel, "Unload Client", modules._unloadCleanup)
 
--- Auto-load after the UI and module callbacks have finished initializing. The
--- dedicated snapshot is authoritative when present; the selected profile file
--- is the fallback if the snapshot cannot be decoded.
 if canFile then
     task.defer(function()
-        -- Allow the GUI, module rows and setting registration to finish first.
         task.wait(0.8)
 
-        -- A saved marker takes precedence over the cached snapshot. Only use
-        -- the snapshot when it belongs to the selected profile, or when there
-        -- is no marker and the snapshot is the only saved startup selection.
         local startupProfile, selectedStamp, selectionSource = getAutoLoadSelection()
         local snapshot, snapshotProfile, snapshotStamp = readStartupSnapshot()
         local data = nil
         local loadedFromSnapshot = false
 
-        -- If the snapshot is the newest surviving selection, it is the chosen
-        -- config itself. Otherwise prefer the selected profile file, falling
-        -- back to a matching snapshot only if that profile file is unavailable.
         if selectionSource == "snapshot" and snapshot and snapshotProfile == startupProfile then
             data = snapshot
             loadedFromSnapshot = true
@@ -8075,8 +8451,6 @@ if canFile then
             if profileInput then profileInput.Text = startupProfile end
 
             local applyOk = applyConfig(data)
-            -- A few visual modules depend on Character/PlayerGui finishing their
-            -- startup. Retry twice after short settling windows.
             task.wait(0.35)
             local secondApplyOk = applyConfig(data)
             task.wait(0.5)
@@ -8099,4 +8473,4 @@ if canFile then
 end
 end)()
 
-print("TrueSight loaded. Press " .. keyUiState.menuKey.Name .. " to hide/show the menu.")
+print("TrueSight loaded with menu hidden. Press " .. keyUiState.menuKey.Name .. " to open/close it.")
