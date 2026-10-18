@@ -5236,24 +5236,24 @@ local originalEffects = {}
 local originalGlobalShadows
 local function setLowEffects(on)
     if on then
+        -- Avoid taking a second snapshot if the toggle fires twice.
+        if originalGlobalShadows ~= nil then return end
         table.clear(originalEffects)
         originalGlobalShadows = Lighting.GlobalShadows
         Lighting.GlobalShadows = false
-        local candidates = workspace:GetDescendants()
-        for _, obj in ipairs(Lighting:GetDescendants()) do table.insert(candidates, obj) end
-        for _, obj in ipairs(candidates) do
+
+        -- Keep this deliberately local and cheap: the previous version walked
+        -- every instance in Workspace on the UI thread. That can hitch badly
+        -- in YBA and also disables combat VFX needed for readable gameplay.
+        for _, obj in ipairs(Lighting:GetDescendants()) do
             if not string.find(obj.Name, "^TrueSight") then
                 if obj:IsA("BloomEffect") or obj:IsA("BlurEffect")
                     or obj:IsA("SunRaysEffect") or obj:IsA("DepthOfFieldEffect")
                     or obj:IsA("ColorCorrectionEffect") then
-                    originalEffects[obj] = obj.Enabled
-                    obj.Enabled = false
-                elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam") then
-                    originalEffects[obj] = obj.Enabled
-                    obj.Enabled = false
-                elseif obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
-                    originalEffects[obj] = obj.Enabled
-                    obj.Enabled = false
+                    if obj.Enabled then
+                        originalEffects[obj] = true
+                        obj.Enabled = false
+                    end
                 end
             end
         end
