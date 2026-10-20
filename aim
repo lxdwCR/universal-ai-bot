@@ -7064,7 +7064,7 @@ local function tapSprintKey(keyName)
     if type(keypress) == "function" and type(keyrelease) == "function" then
         local downOk = pcall(keypress, keyInfo.virtualKey)
         if downOk then
-            task.wait(0.045)
+            task.wait(0.03)
             local upOk = pcall(keyrelease, keyInfo.virtualKey)
             if upOk then return true end
             task.wait()
@@ -7079,7 +7079,7 @@ local function tapSprintKey(keyName)
         local downOk = pcall(function()
             virtualInput:SendKeyEvent(true, keyInfo.keyCode, false, game)
         end)
-        task.wait(0.045)
+        task.wait(0.03)
         local upOk = pcall(function()
             virtualInput:SendKeyEvent(false, keyInfo.keyCode, false, game)
         end)
@@ -7109,12 +7109,12 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
     local tapInProgress = false
     local wasRunning = false
     local walkSince = nil
-    local retryDelay = 0.18
+    local retryDelay = 0.09
 
     sprintConn = RunService.Heartbeat:Connect(function(dt)
         elapsed += dt
-        if elapsed < 0.05 then return end
-        elapsed = elapsed % 0.05
+        if elapsed < 0.02 then return end
+        elapsed = elapsed % 0.02
 
         local character = player.Character
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -7173,7 +7173,7 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
         local now = os.clock()
         local elapsedWalking = now - walkSince
         local sinceAttempt = now - lastAttempt
-        if elapsedWalking >= 0.03 and sinceAttempt >= retryDelay then
+        if elapsedWalking >= 0.02 and sinceAttempt >= retryDelay then
             lastAttempt = now
             tapInProgress = true
             task.spawn(function()
