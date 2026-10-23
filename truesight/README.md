@@ -1,21 +1,24 @@
-# TrueSight learned-move database
+# TrueSight move data and optional cloud synchronization
 
-This folder is independent of the existing `aim` script.
+This folder is independent of the original `aim` script. It does not modify the script you already have in this repository.
 
-- `moves/observations.json` — automated captures from client-observed animation replay intervals, plus users' manually entered parry/cooldown mappings. **Unverified.**
-- `moves/verified.json` — separately curated entries with validated move IDs, cooldowns, reach and parry timing. Never populate this directly from raw observations.
-- `sync_companion.py` — optional PC sync tool for use with GitHub CLI.
+## Files
 
-## Using the sync
+- `moves/observations.json` — **unverified** observed enemy animation replay gaps and user-supplied labels/parry classifications.
+- `moves/verified.json` — curated, independently verified entries; intentionally empty until reviewed.
 
-1. Use TrueSight v10, enable Combat > Enemy Cooldown Tracker, then use **Export Learned Moves for GitHub Sync**. The script writes `TrueSightMoveExport.json` in your executor's filesystem.
-2. On your PC, install Python 3 and [GitHub CLI](https://cli.github.com/), then run `gh auth login`.
-3. Locate the JSON in your executor's workspace and run:
+## Cloud Sync (no separate PC application)
 
-```powershell
-py sync_companion.py --source "C:\path\to\executor\workspace\TrueSightMoveExport.json"
-```
+Use the **TrueSight v11 Cloud Sync Package** supplied in the ChatGPT conversation. It includes `TrueSight_v11_Cloud_GitHub_AutoSync.lua`, `cloudflare-worker.js`, and `SETUP.md`.
 
-The companion checks the export periodically and updates the `observations.json` file using your GitHub CLI login. The game script **does not contain or use GitHub credentials**. It can download the public, curated `verified.json` read-only if the executor's HTTP access allows it.
+1. Merge this pull request so `observations.json` is available on the `main` branch.
+2. Create a Cloudflare Worker in your browser, paste the package's `cloudflare-worker.js` source, then deploy it.
+3. Configure the Worker secrets `GITHUB_TOKEN` (fine-grained Contents read/write access **only** for `lxdwCR/universal-ai-bot`) and `SYNC_KEY` (an independent random string of at least 32 characters); set `GITHUB_REPO=lxdwCR/universal-ai-bot` and optionally `GITHUB_BRANCH=main`.
+4. In TrueSight v11, open **Combat**, enter the deployed HTTPS endpoint URL ending in `/sync` and your private `SYNC_KEY`, then enable **Cloud GitHub Auto-Sync**.
+5. Once TrueSight has learned an interval, it will queue an upload. Use **Sync Learned Moves Now** to test the connection.
 
-The repository is public: synced move data becomes publicly visible. No usernames, chat content or player/session identifiers are exported. An observed shortest replay interval is **not the actual cooldown**, and user-entered parry categories are **not verified**.
+Cloud sync is optional. It does not use Python, GitHub CLI, or a companion process on your PC. Your GitHub token stays in the Worker's secret storage, and **must not** be embedded in a public Lua script. The separate `SYNC_KEY` is stored locally as plaintext in the executor's `TrueSightCloudSync.json`: do not share that file.
+
+The repository is public, so synchronized learned move data is public. The schema contains animation IDs, replay intervals, and calibrated move metadata — no usernames, session identifiers, or chat messages. **Observed replay gaps are not verified cooldowns**, and user-supplied parry labels are not confirmed game mechanics. Raw observations are never promoted automatically into `verified.json`.
+
+This cannot guarantee avoiding Roblox anti-cheat or account sanctions. There is no promise that an unsupported executor's HTTP requests will work.
