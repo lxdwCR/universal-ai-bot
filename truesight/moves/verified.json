@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "game": "YBA",
+  "notice": "Curated entries only. Empty until move IDs, cooldowns and parryability are independently verified.",
+  "moves": []
+}
