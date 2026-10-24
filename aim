@@ -1,4 +1,4 @@
--- TRUESIGHT | client-side visual script
+-- TRUESIGHT v27 | client-side visual script
 -- UI/FX maintenance build: startup-only asset discovery, fixed freelook input, hotbar-slot spec quick-use, tidy module settings.
 -- Client-side visuals plus a small YBA Character Skill Tree helper.
 --
@@ -9,6 +9,89 @@
 --   Menu key (default RightShift) = show/hide the menu (rebind it in the Client panel)
 --
 -- The "Color" setting changes the China Hat, Player Trails, Wings and the GUI accent together.
+
+-- v22 AUTO-EXEC SAFE STARTUP ---------------------------------------------------
+-- The Roblox DataModel can report IsLoaded before a specific game's character,
+-- camera and controls have finished initializing. On a fresh auto-execute,
+-- wait without creating UI, changing the camera, or applying any saved modules.
+-- If YBA does not become playable, skip TrueSight rather than risk interfering
+-- with its loader. Running it again manually in an already loaded session still
+-- preserves the normal hot re-execution path.
+do
+    local env
+    pcall(function()
+        env = type(getgenv) == "function" and getgenv() or _G
+    end)
+
+    local earlyPlayers = game:GetService("Players")
+    local earlyPlayer = earlyPlayers.LocalPlayer
+    local earlyGui = earlyPlayer and earlyPlayer:FindFirstChild("PlayerGui")
+    local alreadyRunning = earlyGui and earlyGui:FindFirstChild("TrueSight") ~= nil
+
+    if not alreadyRunning then
+        local bootKey = "__TrueSightAutoExecV22Booting"
+        if type(env) == "table" and rawget(env, bootKey) then
+            warn("[TrueSight] Ignoring overlapping auto-execute startup")
+            return
+        end
+        if type(env) == "table" then rawset(env, bootKey, true) end
+
+        local started = os.clock()
+        local timeout = 90
+        local readySince = nil
+        local ready = false
+        local waitingFor = "game loading"
+
+        while os.clock() - started < timeout do
+            local plr = earlyPlayers.LocalPlayer
+            local char = plr and plr.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local playerGui = plr and plr:FindFirstChild("PlayerGui")
+            local playerScripts = plr and plr:FindFirstChild("PlayerScripts")
+            local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
+            local currentCamera = workspace.CurrentCamera
+            local camSubject = currentCamera and currentCamera.CameraSubject
+            local cameraOnCharacter = camSubject and char and
+                (camSubject == hum or camSubject:IsDescendantOf(char))
+
+            local fullyReady = game:IsLoaded() and playerGui and playerModule
+                and hum and hum.Health > 0 and root and not root.Anchored
+                and currentCamera and currentCamera.CameraType ~= Enum.CameraType.Scriptable
+                and cameraOnCharacter
+
+            if fullyReady then
+                -- Require uninterrupted stability; YBA may briefly create a
+                -- humanoid/camera and then replace them during its own loader.
+                readySince = readySince or os.clock()
+                if os.clock() - readySince >= 4 then
+                    ready = true
+                    break
+                end
+            else
+                readySince = nil
+                if not game:IsLoaded() then waitingFor = "game loading"
+                elseif not plr then waitingFor = "LocalPlayer"
+                elseif not playerGui then waitingFor = "PlayerGui"
+                elseif not playerModule then waitingFor = "Roblox PlayerModule controls"
+                elseif not hum or not root then waitingFor = "playable character"
+                elseif hum.Health <= 0 or root.Anchored then waitingFor = "character spawn/unfreeze"
+                else waitingFor = "player camera" end
+            end
+            task.wait(0.2)
+        end
+        if type(env) == "table" then rawset(env, bootKey, nil) end
+        if not ready then
+            warn("[TrueSight] Auto-execute was skipped (90s timeout waiting for "
+                .. waitingFor .. "). Roblox/YBA has not reached a stable playable state. "
+                .. "You can execute TrueSight manually after joining.")
+            return
+        end
+        -- A final brief grace period before UI creation / config restoration.
+        task.wait(1.5)
+        print("[TrueSight] Auto-execute startup ready; initializing modules safely")
+    end
+end
 
 -- Safe hot re-execution: call the previous TrueSight run's OWN cleanup first.
 -- This stops old event listeners, render loops, helpers and preview instances,
@@ -1808,201 +1891,114 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.DisplayOrder = 100
 gui.Parent = player:WaitForChild("PlayerGui")
 
--- Startup intro: kept inside a callback so it does not add locals to the main
--- chunk (important for executors that hit Luau's local-register limit).
+-- Compact, non-blocking startup toast. Kept in a child callback to avoid
+-- exceeding Luau's top-level local register limit. No fullscreen overlay.
 task.spawn(function()
-    local introOk, introErr = pcall(function()
-        local intro = Instance.new("Frame")
-        intro.Name = "StartupIntro"
-        intro.Size = UDim2.fromScale(1, 1)
-        intro.Position = UDim2.fromScale(0, 0)
-        intro.BackgroundColor3 = Color3.fromRGB(7, 9, 14)
-        intro.BackgroundTransparency = 0.12
-        intro.BorderSizePixel = 0
-        intro.Active = true
-        intro.ZIndex = 1000
-        intro.Parent = gui
+    local ok, err = pcall(function()
+        if modules._unloaded or not gui.Parent then return end
 
-        local card = Instance.new("Frame")
-        card.Name = "IntroCard"
-        card.AnchorPoint = Vector2.new(0.5, 0.5)
-        card.Position = UDim2.fromScale(0.5, 0.545)
-        card.Size = UDim2.fromOffset(390, 154)
-        card.BackgroundColor3 = Color3.fromRGB(15, 17, 24)
-        card.BackgroundTransparency = 0.06
+        local card = Instance.new("CanvasGroup")
+        card.Name = "StartupIntro"
+        card.AnchorPoint = Vector2.new(0.5, 0)
+        card.Position = UDim2.new(0.5, 0, 0, 47)
+        card.Size = UDim2.fromOffset(300, 76)
+        card.BackgroundColor3 = Color3.fromRGB(13, 16, 24)
+        card.BackgroundTransparency = 0.04
         card.BorderSizePixel = 0
-        card.ZIndex = 1001
-        card.Parent = intro
+        card.GroupTransparency = 1
+        card.Active = false
+        card.ZIndex = 1000
+        card.Parent = gui
+        local radius = Instance.new("UICorner")
+        radius.CornerRadius = UDim.new(0, 10)
+        radius.Parent = card
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = accent
+        stroke.Transparency = 0.72
+        stroke.Thickness = 1
+        stroke.Parent = card
 
-        local cardCorner = Instance.new("UICorner")
-        cardCorner.CornerRadius = UDim.new(0, 10)
-        cardCorner.Parent = card
-
-        local cardStroke = Instance.new("UIStroke")
-        cardStroke.Color = accent
-        cardStroke.Thickness = 1.2
-        cardStroke.Transparency = 0.34
-        cardStroke.Parent = card
-
-        local cardScale = Instance.new("UIScale")
-        cardScale.Scale = 0.88
-        cardScale.Parent = card
-
-        local accentBar = Instance.new("Frame")
-        accentBar.Name = "AccentBar"
-        accentBar.Position = UDim2.fromOffset(22, 19)
-        accentBar.Size = UDim2.fromOffset(3, 28)
-        accentBar.BackgroundColor3 = accent
-        accentBar.BorderSizePixel = 0
-        accentBar.ZIndex = 1002
-        accentBar.Parent = card
-        local barCorner = Instance.new("UICorner")
-        barCorner.CornerRadius = UDim.new(1, 0)
-        barCorner.Parent = accentBar
+        local dot = Instance.new("Frame")
+        dot.Name = "Accent"
+        dot.Position = UDim2.fromOffset(17, 19)
+        dot.Size = UDim2.fromOffset(3, 28)
+        dot.BackgroundColor3 = accent
+        dot.BorderSizePixel = 0
+        dot.ZIndex = 1001
+        dot.Parent = card
+        local dotCorner = Instance.new("UICorner")
+        dotCorner.CornerRadius = UDim.new(1, 0)
+        dotCorner.Parent = dot
 
         local title = Instance.new("TextLabel")
-        title.Name = "IntroTitle"
+        title.Name = "Brand"
         title.BackgroundTransparency = 1
-        title.Position = UDim2.fromOffset(36, 13)
-        title.Size = UDim2.new(1, -58, 0, 39)
-        title.Font = Enum.Font.GothamBold
-        title.TextSize = 29
+        title.Position = UDim2.fromOffset(30, 13)
+        title.Size = UDim2.fromOffset(250, 26)
         title.TextXAlignment = Enum.TextXAlignment.Left
-        title.TextColor3 = Color3.fromRGB(242, 245, 252)
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 19
         title.RichText = true
         title.Text = 'True<font color="#' .. accent:ToHex() .. '">Sight</font>'
-        title.TextTransparency = 1
-        title.ZIndex = 1002
+        title.TextColor3 = Color3.fromRGB(238, 243, 252)
+        title.ZIndex = 1001
         title.Parent = card
 
-        local subtitle = Instance.new("TextLabel")
-        subtitle.Name = "IntroSubtitle"
-        subtitle.BackgroundTransparency = 1
-        subtitle.Position = UDim2.fromOffset(37, 49)
-        subtitle.Size = UDim2.new(1, -58, 0, 17)
-        subtitle.Font = Enum.Font.GothamMedium
-        subtitle.TextSize = 10
-        subtitle.TextColor3 = Color3.fromRGB(151, 160, 179)
-        subtitle.TextXAlignment = Enum.TextXAlignment.Left
-        subtitle.Text = "YBA CLIENT  /  VERSION 4"
-        subtitle.TextTransparency = 1
-        subtitle.ZIndex = 1002
-        subtitle.Parent = card
+        local sub = Instance.new("TextLabel")
+        sub.Name = "Hint"
+        sub.BackgroundTransparency = 1
+        sub.Position = UDim2.fromOffset(31, 41)
+        sub.Size = UDim2.fromOffset(248, 16)
+        sub.TextXAlignment = Enum.TextXAlignment.Left
+        sub.Font = Enum.Font.GothamMedium
+        sub.TextSize = 10
+        sub.TextColor3 = Color3.fromRGB(156, 166, 187)
+        sub.Text = "CLIENT READY  ·  RIGHT SHIFT TO OPEN"
+        sub.ZIndex = 1001
+        sub.Parent = card
 
-        local status = Instance.new("TextLabel")
-        status.Name = "IntroStatus"
-        status.BackgroundTransparency = 1
-        status.Position = UDim2.fromOffset(23, 88)
-        status.Size = UDim2.new(1, -46, 0, 16)
-        status.Font = Enum.Font.GothamMedium
-        status.TextSize = 10
-        status.TextColor3 = Color3.fromRGB(190, 196, 209)
-        status.TextXAlignment = Enum.TextXAlignment.Left
-        status.Text = "INITIALIZING CLIENT"
-        status.TextTransparency = 1
-        status.ZIndex = 1002
-        status.Parent = card
+        local bar = Instance.new("Frame")
+        bar.Name = "Progress"
+        bar.Position = UDim2.new(0, 0, 1, -2)
+        bar.Size = UDim2.fromScale(0, 0)
+        bar.BorderSizePixel = 0
+        bar.BackgroundColor3 = accent
+        bar.ZIndex = 1002
+        bar.Parent = card
 
-        local track = Instance.new("Frame")
-        track.Name = "LoadingTrack"
-        track.Position = UDim2.fromOffset(23, 117)
-        track.Size = UDim2.new(1, -46, 0, 3)
-        track.BackgroundColor3 = Color3.fromRGB(42, 46, 57)
-        track.BackgroundTransparency = 1
-        track.BorderSizePixel = 0
-        track.ZIndex = 1002
-        track.Parent = card
-        local trackCorner = Instance.new("UICorner")
-        trackCorner.CornerRadius = UDim.new(1, 0)
-        trackCorner.Parent = track
-
-        local fill = Instance.new("Frame")
-        fill.Name = "LoadingFill"
-        fill.Size = UDim2.fromScale(0, 1)
-        fill.BackgroundColor3 = accent
-        fill.BackgroundTransparency = 1
-        fill.BorderSizePixel = 0
-        fill.ZIndex = 1003
-        fill.Parent = track
-        local fillCorner = Instance.new("UICorner")
-        fillCorner.CornerRadius = UDim.new(1, 0)
-        fillCorner.Parent = fill
-
-        -- Sounds live under the script's ScreenGui so they're local to this UI.
+        -- Reuse the previous intro sounds at a less intrusive volume.
         local whoosh = Instance.new("Sound")
         whoosh.Name = "TrueSightIntroWhoosh"
         whoosh.SoundId = "rbxassetid://137081214744553"
-        whoosh.Volume = 0.42
-        whoosh.Parent = gui
+        whoosh.Volume = 0.18
+        whoosh.Parent = card
         pcall(function() whoosh:Play() end)
-        Debris:AddItem(whoosh, 2.5)
 
+        TweenService:Create(card, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            GroupTransparency = 0,
+            Position = UDim2.new(0.5, 0, 0, 66),
+        }):Play()
+        TweenService:Create(bar, TweenInfo.new(0.64, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Size = UDim2.new(1, 0, 0, 2),
+        }):Play()
+        task.wait(0.64)
+        if not card.Parent or modules._unloaded then return end
         local pop = Instance.new("Sound")
         pop.Name = "TrueSightIntroPop"
         pop.SoundId = "rbxassetid://140323850218372"
-        pop.Volume = 0.32
-        pop.PlaybackSpeed = 1.08
-        pop.Parent = gui
-        Debris:AddItem(pop, 2.5)
-        task.delay(0.19, function()
-            if pop.Parent then pcall(function() pop:Play() end) end
-        end)
-
-        TweenService:Create(card, TweenInfo.new(0.48, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Position = UDim2.fromScale(0.5, 0.5),
+        pop.Volume = 0.14
+        pop.Parent = card
+        pcall(function() pop:Play() end)
+        task.wait(0.22)
+        if not card.Parent then return end
+        TweenService:Create(card, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            GroupTransparency = 1,
+            Position = UDim2.new(0.5, 0, 0, 55),
         }):Play()
-        TweenService:Create(cardScale, TweenInfo.new(0.48, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Scale = 1,
-        }):Play()
-        TweenService:Create(title, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            TextTransparency = 0,
-        }):Play()
-        task.delay(0.08, function()
-            if subtitle.Parent then
-                TweenService:Create(subtitle, TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                    TextTransparency = 0,
-                }):Play()
-            end
-            if status.Parent then
-                TweenService:Create(status, TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                    TextTransparency = 0,
-                }):Play()
-            end
-            if track.Parent then
-                TweenService:Create(track, TweenInfo.new(0.24), {BackgroundTransparency = 0}):Play()
-                TweenService:Create(fill, TweenInfo.new(0.9, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-                    Size = UDim2.fromScale(1, 1),
-                    BackgroundTransparency = 0,
-                }):Play()
-            end
-        end)
-
-        task.wait(1.28)
-        if not intro.Parent then return end
-        status.Text = "READY"
-        TweenService:Create(status, TweenInfo.new(0.12), {TextColor3 = accent}):Play()
-        task.wait(0.18)
-
-        TweenService:Create(intro, TweenInfo.new(0.32, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-            BackgroundTransparency = 1,
-        }):Play()
-        TweenService:Create(card, TweenInfo.new(0.26, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-            BackgroundTransparency = 1,
-            Position = UDim2.fromScale(0.5, 0.475),
-        }):Play()
-        TweenService:Create(cardStroke, TweenInfo.new(0.22), {Transparency = 1}):Play()
-        TweenService:Create(title, TweenInfo.new(0.18), {TextTransparency = 1}):Play()
-        TweenService:Create(subtitle, TweenInfo.new(0.18), {TextTransparency = 1}):Play()
-        TweenService:Create(status, TweenInfo.new(0.18), {TextTransparency = 1}):Play()
-        TweenService:Create(accentBar, TweenInfo.new(0.18), {BackgroundTransparency = 1}):Play()
-        TweenService:Create(track, TweenInfo.new(0.18), {BackgroundTransparency = 1}):Play()
-        TweenService:Create(fill, TweenInfo.new(0.18), {BackgroundTransparency = 1}):Play()
-        task.wait(0.36)
-        if intro.Parent then intro:Destroy() end
+        task.wait(0.23)
+        if card.Parent then card:Destroy() end
     end)
-    if not introOk then
-        warn("[TrueSight] Startup intro skipped: " .. tostring(introErr))
-    end
+    if not ok then warn("[TrueSight] Intro skipped: " .. tostring(err)) end
 end)
 
 -- Screen effects layer (sits under the menu)
@@ -2337,6 +2333,7 @@ local activeSlider
 local keyUiState = {
     binding = false,
     bindingModule = nil,
+    capture = nil,
     menuKey = Enum.KeyCode.RightShift,
     keyBtn = nil,
     updateKeyUi = nil,
@@ -2955,7 +2952,8 @@ local uiInteraction = (function()
         if not anchor or not anchor.Parent or type(options) ~= "table" or #options == 0 then return end
         local viewport = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
         local width = math.min(math.max(anchor.AbsoluteSize.X, 174), math.max(140, viewport.X - 16))
-        local height = math.min(#options * 27 + 10, 226, math.max(100, viewport.Y - 16))
+        local searchable = #options > 12
+        local height = math.min(#options * 30 + 10 + (searchable and 38 or 0), 258, math.max(100, viewport.Y - 16))
         local x = math.clamp(anchor.AbsolutePosition.X, 8, math.max(8, viewport.X - width - 8))
         local below = anchor.AbsolutePosition.Y + anchor.AbsoluteSize.Y + 3
         local y = below + height <= viewport.Y - 8 and below or (anchor.AbsolutePosition.Y - height - 3)
@@ -2981,8 +2979,8 @@ local uiInteraction = (function()
 
         local list = Instance.new("ScrollingFrame")
         list.Name = "Options"
-        list.Position = UDim2.fromOffset(4, 4)
-        list.Size = UDim2.new(1, -8, 1, -8)
+        list.Position = UDim2.fromOffset(4, searchable and 39 or 4)
+        list.Size = UDim2.new(1, -8, 1, searchable and -43 or -8)
         list.BackgroundTransparency = 1
         list.BorderSizePixel = 0
         list.ScrollBarThickness = 3
@@ -2999,11 +2997,12 @@ local uiInteraction = (function()
         pad.PaddingBottom = UDim.new(0, 2)
         pad.Parent = list
 
+        local optionButtons = {}
         for i, option in ipairs(options) do
             local opt = Instance.new("TextButton")
             opt.Name = "Option_" .. tostring(i)
             opt.LayoutOrder = i
-            opt.Size = UDim2.new(1, -2, 0, 25)
+            opt.Size = UDim2.new(1, -2, 0, 27)
             opt.BackgroundColor3 = i == selectedIndex and ROW:Lerp(accent, 0.24) or ROW
             opt.BorderSizePixel = 0
             opt.AutoButtonColor = false
@@ -3012,7 +3011,7 @@ local uiInteraction = (function()
             opt.Font = FONT
             opt.TextXAlignment = Enum.TextXAlignment.Left
             opt.TextTruncate = Enum.TextTruncate.AtEnd
-            opt.Text = (i == selectedIndex and "  ✓  " or "      ") .. tostring(option)
+            opt.Text = (i == selectedIndex and "  ✓   " or "       ") .. tostring(option)
             opt.ZIndex = 902
             opt.Parent = list
             corner(opt, 5)
@@ -3031,6 +3030,33 @@ local uiInteraction = (function()
             opt.MouseButton1Click:Connect(function()
                 closeDropdown()
                 choose(i)
+            end)
+            optionButtons[#optionButtons + 1] = {button = opt, title = string.lower(tostring(option))}
+        end
+        if searchable then
+            local search = Instance.new("TextBox")
+            search.Name = "FilterOptions"
+            search.Position = UDim2.fromOffset(5, 5)
+            search.Size = UDim2.new(1, -10, 0, 28)
+            search.BackgroundColor3 = ROW
+            search.BorderSizePixel = 0
+            search.ClearTextOnFocus = false
+            search.PlaceholderText = "Search options..."
+            search.PlaceholderColor3 = DIM
+            search.Text = ""
+            search.TextColor3 = TEXT
+            search.TextSize = 11
+            search.Font = FONT
+            search.TextXAlignment = Enum.TextXAlignment.Left
+            search.ZIndex = 902
+            search.Parent = popup
+            corner(search, 5)
+            search:GetPropertyChangedSignal("Text"):Connect(function()
+                local query = string.lower(search.Text)
+                for _, entry in ipairs(optionButtons) do
+                    entry.button.Visible = query == "" or string.find(entry.title, query, 1, true) ~= nil
+                end
+                list.CanvasPosition = Vector2.zero
             end)
         end
         state.dropdownPopup = popup
@@ -3369,22 +3395,49 @@ end
 -- Dropdown widget: choices open in a top-layer popup, so scroll clipping cannot hide them.
 local function addCycle(parent, label, options, start, onChange, key)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, 0, 0, 49)
+    b.Size = UDim2.new(1, 0, 0, 43)
     styleButton(b)
     b.BackgroundColor3 = ROW
-    b.TextColor3 = TEXT
+    b.Text = ""
     b:SetAttribute("TrueSightRole", "row")
-    b.TextSize = 11
-    b.TextWrapped = true
-    b.TextYAlignment = Enum.TextYAlignment.Center
-    b.TextTruncate = Enum.TextTruncate.AtEnd
-    local padding = Instance.new("UIPadding")
-    padding.PaddingLeft = UDim.new(0, 12)
-    padding.PaddingRight = UDim.new(0, 12)
-    padding.Parent = b
+    local labelText = Instance.new("TextLabel")
+    labelText.Name = "SettingName"
+    labelText.Size = UDim2.new(1, -23, 0, 16)
+    labelText.Position = UDim2.fromOffset(10, 3)
+    labelText.BackgroundTransparency = 1
+    labelText.Font = FONT
+    labelText.TextSize = 10
+    labelText.TextColor3 = DIM
+    labelText.TextXAlignment = Enum.TextXAlignment.Left
+    labelText.TextTruncate = Enum.TextTruncate.AtEnd
+    labelText.Text = tostring(label)
+    labelText.Active = false
+    labelText.Parent = b
+    local valueText = Instance.new("TextLabel")
+    valueText.Name = "SelectedOption"
+    valueText.Size = UDim2.new(1, -35, 0, 19)
+    valueText.Position = UDim2.fromOffset(10, 20)
+    valueText.BackgroundTransparency = 1
+    valueText.Font = FONTB
+    valueText.TextSize = 11
+    valueText.TextColor3 = TEXT
+    valueText.TextXAlignment = Enum.TextXAlignment.Left
+    valueText.TextTruncate = Enum.TextTruncate.AtEnd
+    valueText.Active = false
+    valueText.Parent = b
+    local arrow = Instance.new("TextLabel")
+    arrow.Size = UDim2.fromOffset(20, 23)
+    arrow.Position = UDim2.new(1, -26, 0, 18)
+    arrow.BackgroundTransparency = 1
+    arrow.Text = "⌄"
+    arrow.Font = FONTB
+    arrow.TextSize = 15
+    arrow.TextColor3 = DIM
+    arrow.Active = false
+    arrow.Parent = b
     local idx = math.clamp(tonumber(start) or 1, 1, math.max(1, #options))
     local function refresh()
-        b.Text = label .. "   ▾\n" .. tostring(options[idx])
+        valueText.Text = tostring(options[idx])
     end
     refresh()
     local function choose(i)
@@ -3633,6 +3686,44 @@ local function addModule(panel, name, onToggle)
         widget.LayoutOrder = settingOrder
         settingOrder += 1
         return widget
+    end
+
+    -- V26: per-feature free-form keyboard binding; Esc cancels, Backspace clears.
+    -- Uses the same central capture path as existing module/menu binds.
+    function mod.keySetting(label, defaultKey, onChange)
+        markSettings()
+        local selected = defaultKey
+        local btn = Instance.new("TextButton")
+        btn.LayoutOrder = settingOrder
+        settingOrder += 1
+        btn.Size = UDim2.new(1, 0, 0, 32)
+        styleButton(btn)
+        btn.TextSize = 11
+        btn.Parent = settings
+        btn:SetAttribute("TrueSightRole", "sub")
+        local function setKey(key)
+            selected = key
+            btn.Text = "  " .. label .. ":  " .. (key and key.Name or "None") .. "    [Edit]"
+            if onChange then onChange(key) end
+        end
+        btn.MouseButton1Click:Connect(function()
+            keyUiState.capture = {
+                label = label,
+                callback = function(key) setKey(key); requestSave() end,
+                refresh = function() setKey(selected) end,
+            }
+            btn.Text = "  " .. label .. ": press any key   [Esc cancels]"
+        end)
+        registerConfig(name .. "/" .. label, function()
+            return selected and selected.Name or ""
+        end, function(value)
+            if type(value) ~= "string" then return end
+            if value == "" then setKey(nil); return end
+            local ok, key = pcall(function() return Enum.KeyCode[value] end)
+            if ok and key and key ~= Enum.KeyCode.Unknown then setKey(key) end
+        end)
+        setKey(defaultKey)
+        return {button = btn, set = setKey, get = function() return selected end}
     end
 
     local bindButton = Instance.new("TextButton")
@@ -3978,6 +4069,2203 @@ visualModules.panel = visualPanel
 end)()
 
 ------------------------------------------------------------------
+-- Showcase Chams: diamond shimmer + reversible native R15 body package.
+-- 1 Highlight per target; capped native Sparkles for diamond style only.
+-- All avatar changes are local, tracked and reverted on off/unload/respawn.
+------------------------------------------------------------------
+;(function()
+    local panel = visualModules.panel
+    if not panel then return end
+
+    local show = {
+        scope = 1,        -- My Character / Other Players / Everyone
+        style = 2,        -- Existing style indices kept for saved config safety
+        color = 1,
+        avatarMode = 1,   -- Classic Noob / Hide Outfit / Keep Original
+        headShape = 1,   -- Classic Head / Round Head / Keep Mesh
+        faceMode = 1,    -- Smile / Blank
+        noobPalette = 1, -- Classic / Gold / TrueSight Accent
+        sparkleLevel = 2, -- Off / Subtle / Sparkly
+        intensity = 0.75,
+        outline = 0.90,
+        depth = 1,
+        quality = 1,
+        maxTargets = 8,
+        range = 160,
+        running = 0,
+        records = {},
+        avatar = nil,
+    }
+    local colors = {
+        Color3.fromRGB(255, 201, 60),
+        Color3.fromRGB(255, 201, 60),
+        Color3.fromRGB(110, 209, 255),
+        Color3.fromRGB(255, 100, 160),
+        Color3.fromRGB(164, 255, 77),
+    }
+    local styleNames = {"Gold Outline", "Golden Glow", "Solid Gold", "ForceField", "Neon", "Metallic", "Diamond Shimmer"}
+    local targetNames = {"My Character", "Other Players", "Everyone"}
+    local qualityNames = {"Eco", "Balanced", "High"}
+    local colorNames = {"Gold", "TrueSight Accent", "Ice Blue", "Rose", "Lime"}
+    local avatarNames = {"Classic R15 Package", "No Hats / Outfit", "Keep Original"}
+    local faceNames = {"Smile", "Blank"}
+    local paletteNames = {"Classic Yellow/Blue/Green", "All Gold", "TrueSight Accent"}
+    local sparkleNames = {"Off", "Subtle", "Sparkly"}
+    local materials = {
+        [4] = Enum.Material.ForceField,
+        [5] = Enum.Material.Neon,
+        [6] = Enum.Material.Metal,
+        [7] = Enum.Material.Ice,
+    }
+    local maxParts = {[1] = 16, [2] = 24, [3] = 32}
+    local maxPlayers = {[1] = 6, [2] = 12, [3] = 20}
+    local refreshDelay = {[1] = 1.25, [2] = 0.8, [3] = 0.6}
+    local maxSparkles = {[1] = 2, [2] = 4, [3] = 6}
+    local yellow = Color3.fromRGB(245, 205, 48)
+    local blue = Color3.fromRGB(13, 105, 172)
+    local green = Color3.fromRGB(75, 151, 75)
+    local mod
+
+    local function chosenColor()
+        return show.color == 2 and accent or colors[show.color] or colors[1]
+    end
+
+    -- Keep R15 (and its actual package/joints). Changing the local humanoid's
+    -- description is much less fragile than attaching fake R6 parts. Save the
+    -- original description and restore it when this setting is disabled.
+    local function avatarSet(state, obj, prop, value)
+        if not obj or not obj.Parent then return end
+        local success, old = pcall(function() return obj[prop] end)
+        if not success then return end
+        local saved = state.edits[obj]
+        if not saved then saved = {}; state.edits[obj] = saved end
+        if saved[prop] then
+            -- Some games write outfit visibility again after character spawn.
+            if old ~= value then pcall(function() obj[prop] = value end) end
+            return
+        end
+        if old == value then return end
+        local ok = pcall(function() obj[prop] = value end)
+        if ok then saved[prop] = {before = old, applied = value} end
+    end
+
+    local function applyLocalDescription(humanoid, description)
+        if not humanoid or not humanoid.Parent or not description then return false end
+        -- ResetAsync is preferred when other scripts have changed appearance
+        -- between calls. Older clients expose the legacy API instead.
+        local ok, err = pcall(function()
+            humanoid:ApplyDescriptionResetAsync(description)
+        end)
+        if not ok then
+            ok, err = pcall(function() humanoid:ApplyDescription(description) end)
+        end
+        if not ok then
+            warn("[TrueSight] Local R15 package change: " .. tostring(err))
+        end
+        return ok
+    end
+
+    local function originalAppearanceBack(state)
+        if not state or not state.originalDescription then return end
+        local original = state.originalDescription
+        state.originalDescription = nil
+        -- Appearance application yields, so never run it inside RenderStepped
+        -- or the module settings callback. Only restore to this same humanoid.
+        task.spawn(function()
+            if state.humanoid and state.humanoid.Parent
+                and player.Character == state.character then
+                applyLocalDescription(state.humanoid, original)
+            end
+            original:Destroy()
+        end)
+    end
+
+    local function restoreAvatar()
+        local state = show.avatar
+        show.avatar = nil
+        if not state then return end
+        state.cancelled = true
+        for obj, props in pairs(state.edits) do
+            if obj and obj.Parent then
+                for prop, snapshot in pairs(props) do
+                    pcall(function()
+                        if obj[prop] == snapshot.applied then
+                            obj[prop] = snapshot.before
+                        end
+                    end)
+                end
+            end
+        end
+        if state.packageFinished then originalAppearanceBack(state) end
+        table.clear(state.edits)
+    end
+
+    local function colourForPart(name)
+        local base
+        if name == "Head" or name:find("Arm") then base = Color3.fromRGB(245, 205, 48)
+        elseif name:find("Torso") then base = Color3.fromRGB(13, 105, 172)
+        else base = Color3.fromRGB(75, 151, 75) end
+        if show.noobPalette == 2 then return Color3.fromRGB(255, 200, 57) end
+        if show.noobPalette == 3 then return accent end
+        return base
+    end
+
+    -- HumanoidDescription alone is not sufficient in YBA: accessories or clothing
+    -- may be reinserted by the game's character loader after the description applies.
+    -- Hide the visible cosmetic instances locally and record their original properties
+    -- so disabling the module restores them without deleting game-owned items.
+    local function concealCosmetics(state)
+        local character = state and state.character
+        if not character or not character.Parent then return end
+        for _, child in ipairs(character:GetChildren()) do
+            if child:IsA("Accessory") or child:IsA("Hat") then
+                for _, obj in ipairs(child:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        avatarSet(state, obj, "LocalTransparencyModifier", 1)
+                        avatarSet(state, obj, "Transparency", 1)
+                    elseif obj:IsA("Decal") or obj:IsA("Texture") then
+                        avatarSet(state, obj, "Transparency", 1)
+                    elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail")
+                        or obj:IsA("Beam") or obj:IsA("BillboardGui")
+                        or obj:IsA("SurfaceGui") or obj:IsA("PointLight")
+                        or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
+                        avatarSet(state, obj, "Enabled", false)
+                    end
+                end
+            elseif child:IsA("Shirt") then
+                avatarSet(state, child, "ShirtTemplate", "")
+            elseif child:IsA("Pants") then
+                avatarSet(state, child, "PantsTemplate", "")
+            elseif child:IsA("ShirtGraphic") then
+                avatarSet(state, child, "Graphic", "")
+            end
+        end
+    end
+
+    local function startClassicPackage(state)
+        if state.packageStarted then return end
+        state.packageStarted = true
+        task.spawn(function()
+            local humanoid = state.character:FindFirstChildOfClass("Humanoid")
+            if not (humanoid and humanoid.RigType == Enum.HumanoidRigType.R15) then
+                if show.avatar == state and notifyConfig then
+                    notifyConfig("Classic Package needs an R15 character.", false)
+                end
+                return
+            end
+            state.humanoid = humanoid
+            local ok, original = pcall(function() return humanoid:GetAppliedDescription() end)
+            if not ok or not original then
+                warn("[TrueSight] Could not read original humanoid description.")
+                return
+            end
+            state.originalDescription = original
+            local styled = original:Clone()
+            -- Zero means Roblox's default body package, NOT an R6 rig.
+            styled.Head = 0
+            styled.Torso = 0
+            styled.LeftArm = 0
+            styled.RightArm = 0
+            styled.LeftLeg = 0
+            styled.RightLeg = 0
+            styled.BodyTypeScale = 0
+            styled.ProportionScale = 0
+            styled.HeadScale = 1
+            -- Clear cosmetics in the same description, not by bolting on Parts.
+            styled.Shirt = 0
+            styled.Pants = 0
+            styled.GraphicTShirt = 0
+            for _, prop in ipairs({
+                "HatAccessory", "HairAccessory", "FaceAccessory", "NeckAccessory",
+                "ShouldersAccessory", "FrontAccessory", "BackAccessory",
+                "WaistAccessory", "ShirtAccessory", "PantsAccessory",
+                "JacketAccessory", "SweaterAccessory", "ShortsAccessory",
+                "LeftShoeAccessory", "RightShoeAccessory", "DressSkirtAccessory",
+                "EyebrowAccessory", "EyelashAccessory",
+            }) do
+                pcall(function() styled[prop] = "" end)
+            end
+            pcall(function() styled:SetAccessories({}, true) end)
+            styled.Face = show.faceMode == 1 and 144075659 or 0
+            styled.HeadColor = colourForPart("Head")
+            styled.LeftArmColor = colourForPart("LeftArm")
+            styled.RightArmColor = colourForPart("RightArm")
+            styled.TorsoColor = colourForPart("Torso")
+            styled.LeftLegColor = colourForPart("LeftLeg")
+            styled.RightLegColor = colourForPart("RightLeg")
+            if state.cancelled or player.Character ~= state.character then
+                styled:Destroy(); original:Destroy()
+                state.originalDescription = nil
+                return
+            end
+            local applied = applyLocalDescription(humanoid, styled)
+            styled:Destroy()
+            state.packageFinished = applied
+            if applied and not state.cancelled and show.avatar == state then
+                concealCosmetics(state)
+            end
+            if not applied then
+                original:Destroy(); state.originalDescription = nil
+                if notifyConfig and show.avatar == state then
+                    notifyConfig("Roblox blocked the local package change.", false)
+                end
+            elseif state.cancelled or show.avatar ~= state then
+                originalAppearanceBack(state)
+            end
+        end)
+    end
+
+    local function syncAvatar()
+        local character = player.Character
+        if show.avatar and (show.avatar.character ~= character or show.avatarMode == 3) then
+            restoreAvatar()
+        end
+        if not character or not character.Parent or show.avatarMode == 3 then return end
+        local state = show.avatar
+        if not state then
+            state = {character = character, edits = {}, cancelled = false}
+            show.avatar = state
+        end
+        if show.avatarMode == 1 then
+            startClassicPackage(state)
+        end
+        -- Both "Classic R15" and "No Hats / Outfit" must hide game-reinserted
+        -- cosmetics. This is reconciled at the existing low-frequency tick.
+        concealCosmetics(state)
+    end
+
+    local function destroySparkles(record)
+        for _, sparkle in ipairs(record.sparkles) do
+            pcall(function() sparkle:Destroy() end)
+        end
+        table.clear(record.sparkles)
+    end
+
+    local function restoreSurface(record)
+        destroySparkles(record)
+        for part, old in pairs(record.originals) do
+            if part and part.Parent then
+                pcall(function()
+                    if record.appliedMaterial and part.Material == record.appliedMaterial then
+                        part.Material = old.material
+                    end
+                    if record.appliedColor and part.Color == record.appliedColor then
+                        part.Color = old.color
+                    end
+                end)
+            end
+        end
+        table.clear(record.originals)
+        record.appliedMaterial = nil
+        record.appliedColor = nil
+    end
+
+    local function removeRecord(who)
+        local record = show.records[who]
+        if not record then return end
+        show.records[who] = nil
+        restoreSurface(record)
+        if record.highlight then pcall(function() record.highlight:Destroy() end) end
+    end
+
+    local function clearAll()
+        for who in pairs(show.records) do removeRecord(who) end
+    end
+
+    local function applyRecord(record)
+        local h = record.highlight
+        if not h or not h.Parent then return end
+        local tint = chosenColor()
+        local style = show.style
+        local baseOpacity = ({0, 0.75, 1.0, 0.24, 0.27, 0.17, 0.25})[style] or 0.75
+        h.FillColor = tint
+        h.OutlineColor = tint
+        h.FillTransparency = math.clamp(1 - baseOpacity * show.intensity, 0, 1)
+        h.OutlineTransparency = math.clamp(1 - show.outline, 0, 1)
+        h.DepthMode = show.depth == 2 and Enum.HighlightDepthMode.AlwaysOnTop
+            or Enum.HighlightDepthMode.Occluded
+        h.Enabled = true
+
+        restoreSurface(record)
+        local material = materials[style]
+        if not material then return end
+        record.appliedMaterial = material
+        record.appliedColor = tint
+        local count = 0
+        local sparkles = 0
+        for _, obj in ipairs(record.character:GetDescendants()) do
+            if count >= maxParts[show.quality] then break end
+            if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart"
+                and obj.Size.Magnitude < 18 and obj.Transparency < 0.95
+                and obj.LocalTransparencyModifier < 0.95
+                and not obj:FindFirstAncestorOfClass("Accessory")
+                and not obj:FindFirstAncestorOfClass("Tool") then
+                record.originals[obj] = {material = obj.Material, color = obj.Color}
+                obj.Material = material
+                obj.Color = tint
+                count += 1
+
+                local sparkleCap = (show.sparkleLevel == 1) and 0
+                    or math.min(maxSparkles[show.quality], (show.sparkleLevel == 2) and 2 or 6)
+                if style == 7 and sparkles < sparkleCap then
+                    -- Native Sparkles provide diamond glints without extra
+                    -- moving parts, RenderStepped callbacks or cloned rigs.
+                    for _, existing in ipairs(obj:GetChildren()) do
+                        if existing:IsA("Sparkles") and existing.Name == "TrueSightDiamondSparkle" then
+                            existing:Destroy()
+                        end
+                    end
+                    local sparkle = Instance.new("Sparkles")
+                    sparkle.Name = "TrueSightDiamondSparkle"
+                    sparkle.SparkleColor = tint
+                    sparkle.Enabled = true
+                    sparkle.Parent = obj
+                    record.sparkles[#record.sparkles + 1] = sparkle
+                    sparkles += 1
+                end
+            end
+        end
+    end
+
+    local function ensureRecord(who, character)
+        local record = show.records[who]
+        if record and (record.character ~= character or not record.highlight or not record.highlight.Parent) then
+            removeRecord(who)
+            record = nil
+        end
+        if record then return end
+        for _, child in ipairs(character:GetChildren()) do
+            if child:IsA("Highlight") and child.Name == "TrueSightShowcaseHighlight" then
+                child:Destroy()
+            end
+        end
+        local h = Instance.new("Highlight")
+        h.Name = "TrueSightShowcaseHighlight"
+        h.Adornee = character
+        h.DepthMode = Enum.HighlightDepthMode.Occluded
+        h.FillTransparency = 1
+        h.OutlineTransparency = 1
+        h.Parent = character
+        record = {character = character, highlight = h, originals = {}, sparkles = {}}
+        show.records[who] = record
+        applyRecord(record)
+    end
+
+    local function reconcile()
+        if not mod or not mod.enabled or modules._unloaded then
+            clearAll()
+            restoreAvatar()
+            return
+        end
+        -- Avatar disguise is independent of the cham target scope.
+        syncAvatar()
+        local myChar = player.Character
+        local root = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not root then clearAll(); return end
+        local chosen = {}
+        if show.scope ~= 2 then
+            local hum = myChar:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then chosen[player] = myChar end
+        end
+        if show.scope ~= 1 then
+            local candidates = {}
+            for _, who in ipairs(Players:GetPlayers()) do
+                if who ~= player then
+                    local char = who.Character
+                    local theirRoot = char and char:FindFirstChild("HumanoidRootPart")
+                    local hum = char and char:FindFirstChildOfClass("Humanoid")
+                    if theirRoot and hum and hum.Health > 0 then
+                        local distance = (root.Position - theirRoot.Position).Magnitude
+                        if distance <= show.range then
+                            candidates[#candidates + 1] = {player = who, char = char, dist = distance}
+                        end
+                    end
+                end
+            end
+            table.sort(candidates, function(a, b) return a.dist < b.dist end)
+            local remaining = math.max(0, math.min(show.maxTargets, maxPlayers[show.quality]) - (chosen[player] and 1 or 0))
+            for i = 1, math.min(remaining, #candidates) do
+                chosen[candidates[i].player] = candidates[i].char
+            end
+        end
+        for who, record in pairs(show.records) do
+            if not chosen[who] or record.character ~= chosen[who] then
+                removeRecord(who)
+            end
+        end
+        for who, char in pairs(chosen) do
+            if char.Parent then ensureRecord(who, char) end
+        end
+    end
+
+    local function updateStyle()
+        if not mod or not mod.enabled then return end
+        for who, record in pairs(show.records) do
+            if record.character and record.character.Parent then
+                applyRecord(record)
+            else
+                removeRecord(who)
+            end
+        end
+    end
+
+    mod = addModule(panel, "Showcase Chams", function(on)
+        show.running += 1
+        if not on then
+            clearAll()
+            restoreAvatar()
+            return
+        end
+        local run = show.running
+        reconcile()
+        task.spawn(function()
+            while show.running == run and mod.enabled and not modules._unloaded do
+                task.wait(refreshDelay[show.quality] or 1.25)
+                if show.running ~= run or not mod.enabled or modules._unloaded then break end
+                local ok, err = pcall(reconcile)
+                if not ok then warn("[TrueSight] Showcase Chams refresh: " .. tostring(err)) end
+            end
+        end)
+    end)
+
+    mod.cycle("Targets", targetNames, show.scope, function(v)
+        show.scope = v
+        reconcile()
+    end)
+    mod.cycle("Style", styleNames, show.style, function(v)
+        show.style = v
+        updateStyle()
+    end)
+    mod.cycle("My Avatar", avatarNames, show.avatarMode, function(v)
+        if show.avatarMode == v then return end
+        -- Reset material overlays before restoring the original body colours.
+        clearAll()
+        restoreAvatar()
+        show.avatarMode = v
+        reconcile()
+    end)
+    mod.cycle("Classic Face", faceNames, show.faceMode, function(v)
+        show.faceMode = v
+        clearAll(); restoreAvatar(); reconcile()
+    end)
+    mod.cycle("Classic Body Colours", paletteNames, show.noobPalette, function(v)
+        show.noobPalette = v
+        clearAll(); restoreAvatar(); reconcile()
+    end)
+    mod.cycle("Diamond Sparkles", sparkleNames, show.sparkleLevel, function(v)
+        show.sparkleLevel = v
+        updateStyle()
+    end)
+    mod.cycle("Colour", colorNames, show.color, function(v)
+        show.color = v
+        updateStyle()
+    end)
+    mod.slider("Glow Intensity", 0.2, 1, show.intensity, 0.05, function(v)
+        show.intensity = v
+        updateStyle()
+    end)
+    mod.slider("Outline Strength", 0, 1, show.outline, 0.05, function(v)
+        show.outline = v
+        updateStyle()
+    end)
+    mod.cycle("Visibility", {"Visible Only", "Through Walls"}, show.depth, function(v)
+        show.depth = v
+        updateStyle()
+    end)
+    mod.cycle("Performance", qualityNames, show.quality, function(v)
+        show.quality = v
+        reconcile()
+        updateStyle()
+    end)
+    mod.slider("Max Characters", 1, 20, show.maxTargets, 1, function(v)
+        show.maxTargets = math.floor(v + 0.5)
+        reconcile()
+    end)
+    mod.slider("Range (studs)", 50, 350, show.range, 25, function(v)
+        show.range = v
+        reconcile()
+    end)
+    onAccent(function()
+        if show.color == 2 then updateStyle() end
+    end)
+    visualModules.showcaseChams = mod
+    visualModules.clearShowcaseChams = function()
+        show.running += 1
+        clearAll()
+        restoreAvatar()
+    end
+end)()
+
+------------------------------------------------------------------
+-- TrueSight v25 emote wheel: 30 Roblox Marketplace emotes, eight saved slots.
+-- Uses native PlayEmote when allowed; a local AnimationTrack fallback is used
+-- only if the engine permits the asset. Does not bypass asset ownership or
+-- experience animation restrictions. Idle unless the user invokes the wheel.
+------------------------------------------------------------------
+;(function()
+    local panel = visualModules.panel
+    if not panel then return end
+
+    -- Roblox Marketplace emote asset IDs (NOT unverified raw motion IDs).
+    local entries = {
+        {name = "Hello", id = 3576686446},
+        {name = "Shrug", id = 3576968026},
+        {name = "Salute", id = 3360689775},
+        {name = "Tilt", id = 3360692915},
+        {name = "Stadium", id = 3360686498},
+        {name = "Point2", id = 3576823880},
+        {name = "Applaud", id = 5915779043},
+        {name = "Floss Dance", id = 5917570207},
+        {name = "Robot", id = 3576721660},
+        {name = "Hero Landing", id = 5104377791},
+        {name = "Godlike", id = 3823158750},
+        {name = "Shuffle", id = 4391208058},
+        {name = "Monkey", id = 3716636630},
+        {name = "Hype Dance", id = 3696757129},
+        {name = "Fancy Feet", id = 3934988903},
+        {name = "Break Dance", id = 5915773992},
+        {name = "Top Rock", id = 3570535774},
+        {name = "Dorky Dance", id = 4212499637},
+        {name = "Twirl", id = 3716633898},
+        {name = "Zombie", id = 4212496830},
+        {name = "Sleep", id = 4689362868},
+        {name = "Curtsy", id = 4646306583},
+        {name = "Happy", id = 4849499887},
+        {name = "Dizzy", id = 3934986896},
+        {name = "Confused", id = 4940592718},
+        {name = "Power Blast", id = 4849497510},
+        {name = "Celebrate", id = 3994127840},
+        {name = "High Wave", id = 5915776835},
+        {name = "Rock On", id = 5915782672},
+        {name = "Line Dance", id = 4049646104},
+    }
+    local names = {}
+    for i, entry in ipairs(entries) do names[i] = entry.name end
+    local assigned = {1, 2, 3, 8, 9, 10, 11, 12}
+    local wheelKey = Enum.KeyCode.G
+    local closeAfterPlay = true
+    local stopOnMove = true
+    local emoteMod
+    local currentTrack
+    local currentAnimation
+    local runningConn
+    local descriptionSnapshots = {}
+
+    local wheel = Instance.new("Frame")
+    wheel.Name = "TrueSightEmoteWheel"
+    wheel.AnchorPoint = Vector2.new(0.5, 0.5)
+    wheel.Position = UDim2.fromScale(0.5, 0.51)
+    wheel.Size = UDim2.fromOffset(410, 410)
+    wheel.BackgroundColor3 = Color3.fromRGB(10, 13, 22)
+    wheel.BackgroundTransparency = 0.025
+    wheel.BorderSizePixel = 0
+    wheel.Visible = false
+    wheel.ZIndex = 300
+    wheel.Parent = gui
+    corner(wheel, 26)
+    local wheelGrad = Instance.new("UIGradient")
+    wheelGrad.Color = ColorSequence.new(Color3.fromRGB(13, 17, 28), Color3.fromRGB(25, 29, 43))
+    wheelGrad.Rotation = 85
+    wheelGrad.Parent = wheel
+    local wstroke = Instance.new("UIStroke")
+    wstroke.Color = accent
+    wstroke.Thickness = 1.5
+    wstroke.Transparency = 0.42
+    wstroke.Parent = wheel
+    onAccent(function(c)
+        if wstroke.Parent then wstroke.Color = c end
+    end)
+
+    local wheelTitle = Instance.new("TextLabel")
+    wheelTitle.BackgroundTransparency = 1
+    wheelTitle.Position = UDim2.fromOffset(0, 13)
+    wheelTitle.Size = UDim2.new(1, 0, 0, 23)
+    wheelTitle.Font = FONTB
+    wheelTitle.TextSize = 15
+    wheelTitle.Text = "EMOTE WHEEL"
+    wheelTitle.TextColor3 = TEXT
+    wheelTitle.ZIndex = 303
+    wheelTitle.Parent = wheel
+
+    local footer = Instance.new("TextLabel")
+    footer.BackgroundTransparency = 1
+    footer.Position = UDim2.new(0, 0, 1, -27)
+    footer.Size = UDim2.new(1, 0, 0, 19)
+    footer.Font = FONT
+    footer.TextSize = 10
+    footer.TextColor3 = DIM
+    footer.Text = "Click an emote  •  Wheel key / Esc to close"
+    footer.ZIndex = 303
+    footer.Parent = wheel
+
+    local centre = Instance.new("TextButton")
+    centre.Name = "StopEmote"
+    centre.AnchorPoint = Vector2.new(0.5, 0.5)
+    centre.Position = UDim2.fromOffset(205, 210)
+    centre.Size = UDim2.fromOffset(92, 92)
+    centre.BackgroundColor3 = Color3.fromRGB(29, 35, 49)
+    centre.BorderSizePixel = 0
+    centre.Font = FONTB
+    centre.TextSize = 11
+    centre.TextColor3 = TEXT
+    centre.Text = "STOP\nEMOTE"
+    centre.ZIndex = 304
+    centre.Parent = wheel
+    corner(centre, 46)
+
+    local wheelScale = Instance.new("UIScale")
+    wheelScale.Parent = wheel
+    local function updateWheelScale()
+        local camera = workspace.CurrentCamera
+        local view = camera and camera.ViewportSize or Vector2.new(1280, 720)
+        wheelScale.Scale = math.clamp(math.min(view.X / 470, view.Y / 475), 0.68, 1)
+    end
+    updateWheelScale()
+    local slotButtons = {}
+    local function updateSlotLabels()
+        for i = 1, 8 do
+            local button = slotButtons[i]
+            local entry = entries[assigned[i]]
+            if button then
+                button.Text = string.format("%d  •  %s", i, entry and entry.name or "Empty")
+            end
+        end
+    end
+    for i = 1, 8 do
+        local theta = (i - 1) * math.pi / 4 - math.pi / 2
+        local slot = Instance.new("TextButton")
+        slot.Name = "WheelSlot" .. i
+        slot.AnchorPoint = Vector2.new(0.5, 0.5)
+        slot.Position = UDim2.fromOffset(205 + math.cos(theta) * 129, 210 + math.sin(theta) * 129)
+        slot.Size = UDim2.fromOffset(112, 46)
+        slot.BackgroundColor3 = Color3.fromRGB(29, 36, 53)
+        slot.BorderSizePixel = 0
+        slot.Font = FONTB
+        slot.TextSize = 11
+        slot.TextWrapped = true
+        slot.TextColor3 = TEXT
+        slot.ZIndex = 304
+        slot.Parent = wheel
+        corner(slot, 12)
+        local border = Instance.new("UIStroke")
+        border.Color = accent
+        border.Transparency = 0.82
+        border.Parent = slot
+        onAccent(function(c) if border.Parent then border.Color = c end end)
+        slot.MouseEnter:Connect(function()
+            slot.BackgroundColor3 = Color3.fromRGB(44, 56, 77)
+            border.Transparency = 0.20
+        end)
+        slot.MouseLeave:Connect(function()
+            slot.BackgroundColor3 = Color3.fromRGB(29, 36, 53)
+            border.Transparency = 0.82
+        end)
+        slotButtons[i] = slot
+    end
+    updateSlotLabels()
+
+    local function stopTrack()
+        if runningConn then
+            runningConn:Disconnect()
+            runningConn = nil
+        end
+        if currentTrack then
+            pcall(function() currentTrack:Stop(0.12) end)
+            pcall(function() currentTrack:Destroy() end)
+            currentTrack = nil
+        end
+        if currentAnimation then
+            currentAnimation:Destroy()
+            currentAnimation = nil
+        end
+    end
+    local function closeWheel()
+        wheel.Visible = false
+    end
+    centre.MouseButton1Click:Connect(function()
+        stopTrack()
+        closeWheel()
+    end)
+
+    local function report(message)
+        if notifyConfig then
+            pcall(notifyConfig, message, true)
+        else
+            warn("[TrueSight Emotes] " .. tostring(message))
+        end
+    end
+
+    local function playEntry(entry)
+        if not entry or not player.Character then return end
+        local ch = player.Character
+        local humanoid = ch:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then return end
+        if humanoid.RigType ~= Enum.HumanoidRigType.R15 then
+            report("Marketplace emotes need an R15 character")
+            return
+        end
+        if humanoid.MoveDirection.Magnitude > 0.05 then
+            report("Stand still before playing an emote")
+            return
+        end
+        stopTrack()
+        -- Do not overwrite the player's original emote inventory. Add a
+        -- catalogue option only when needed, and remember what to restore.
+        local desc = humanoid:FindFirstChildOfClass("HumanoidDescription")
+        if desc then
+            if not descriptionSnapshots[desc] then
+                local ok, old = pcall(function() return desc:GetEmotes() end)
+                if ok then descriptionSnapshots[desc] = old end
+            end
+            pcall(function()
+                local present = desc:GetEmotes()[entry.name]
+                local found = false
+                if type(present) == "table" then
+                    for _, id in ipairs(present) do
+                        if id == entry.id then found = true break end
+                    end
+                end
+                if not found then desc:AddEmote(entry.name, entry.id) end
+            end)
+        end
+        local played = false
+        local callOK, result = pcall(function() return humanoid:PlayEmote(entry.name) end)
+        played = callOK and result == true
+        if not played then
+            -- Some games remove the standard emote player. Loading the emote
+            -- as a plain AnimationTrack is a best-effort *local* fallback;
+            -- Roblox still enforces asset accessibility / permissions.
+            local animator = humanoid:FindFirstChildOfClass("Animator")
+            if animator then
+                local animation = Instance.new("Animation")
+                animation.Name = "TrueSightMarketplaceEmote"
+                animation.AnimationId = "rbxassetid://" .. tostring(entry.id)
+                local ok, track = pcall(function() return animator:LoadAnimation(animation) end)
+                if ok and track then
+                    local startOK = pcall(function()
+                        track.Priority = Enum.AnimationPriority.Action
+                        track.Looped = false
+                        track:Play(0.15)
+                    end)
+                    if startOK then
+                        currentTrack = track
+                        currentAnimation = animation
+                        played = true
+                        track.Stopped:Once(function()
+                            if currentTrack == track then
+                                stopTrack()
+                            end
+                        end)
+                        if stopOnMove then
+                            runningConn = humanoid.Running:Connect(function(speed)
+                                if speed > 0.5 then stopTrack() end
+                            end)
+                        end
+                    else
+                        pcall(function() track:Destroy() end)
+                        animation:Destroy()
+                    end
+                else
+                    animation:Destroy()
+                end
+            end
+        end
+        if not played then
+            report("Emote unavailable: " .. entry.name .. " (ownership/game restrictions)")
+        end
+    end
+
+    for i = 1, 8 do
+        local slot = slotButtons[i]
+        slot.MouseButton1Click:Connect(function()
+            if not emoteMod or not emoteMod.enabled then return end
+            local entry = entries[assigned[i]]
+            if closeAfterPlay then closeWheel() end
+            task.spawn(function() playEntry(entry) end)
+        end)
+    end
+
+    emoteMod = addModule(panel, "Emote Wheel", function(enabled)
+        if not enabled then
+            closeWheel()
+            stopTrack()
+            for desc, snapshot in pairs(descriptionSnapshots) do
+                if desc and desc.Parent then
+                    pcall(function() desc:SetEmotes(snapshot) end)
+                end
+                descriptionSnapshots[desc] = nil
+            end
+        end
+    end)
+    emoteMod.keySetting("Wheel Key", Enum.KeyCode.G, function(key)
+        wheelKey = key
+        footer.Text = "Click to play  •  1–8 for slots  •  "
+            .. (key and key.Name or "No key") .. " / Esc to close"
+    end)
+    emoteMod.cycle("Close After Emote", {"Yes", "No"}, 1, function(index)
+        closeAfterPlay = (index == 1)
+    end)
+    emoteMod.cycle("Stop On Movement", {"Yes", "No"}, 1, function(index)
+        stopOnMove = (index == 1)
+    end)
+    for i = 1, 8 do
+        emoteMod.cycle("Slot " .. i, names, assigned[i], function(index)
+            assigned[i] = index
+            updateSlotLabels()
+        end)
+    end
+    table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
+        if not emoteMod.enabled or modules._unloaded then return end
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        if wheel.Visible and input.KeyCode == Enum.KeyCode.Escape then
+            closeWheel()
+            return
+        end
+        if processed or UserInputService:GetFocusedTextBox() then return end
+        if keyUiState.binding or keyUiState.bindingModule or keyUiState.capture then return end
+        if wheel.Visible and not clickGui.Visible then
+            local numberKeys = {
+                [Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2,
+                [Enum.KeyCode.Three] = 3, [Enum.KeyCode.Four] = 4,
+                [Enum.KeyCode.Five] = 5, [Enum.KeyCode.Six] = 6,
+                [Enum.KeyCode.Seven] = 7, [Enum.KeyCode.Eight] = 8,
+            }
+            local index = numberKeys[input.KeyCode]
+            if index then
+                if closeAfterPlay then closeWheel() end
+                task.spawn(function() playEntry(entries[assigned[index]]) end)
+                return
+            end
+        end
+        if wheelKey and input.KeyCode == wheelKey and not clickGui.Visible then
+            if not wheel.Visible then updateWheelScale() end
+            wheel.Visible = not wheel.Visible
+        end
+    end))
+    -- Re-execute / unload cleanup runs even for disabled modules.
+    modules._cleanupEmoteWheel = function()
+        closeWheel()
+        stopTrack()
+        for desc, snapshot in pairs(descriptionSnapshots) do
+            if desc and desc.Parent then pcall(function() desc:SetEmotes(snapshot) end) end
+            descriptionSnapshots[desc] = nil
+        end
+    end
+end)()
+
+------------------------------------------------------------------
+-- Stand Avatar Skin (v42): welded movement with live yaw alignment.
+-- Keep an intact R15 render rig and dynamically align its animated torso with
+-- the original stand's live torso (including movement/cutscene poses).
+-- Keep the original R15 joints and compatible animations. The massless,
+-- noncollidable visual rig is welded ONLY to the ORIGINAL stand root during
+-- ordinary movement; cutscenes detach it temporarily for torso matching.
+-- IMPORTANT: Do not split the replacement into separate welded limbs.
+-- Keep the avatar's own joints, clothes, faces and accessory welds intact;
+-- connect its HumanoidRootPart through one reversible stand-root weld.
+-- Original stand animates invisibly; compatible tracks can be replayed on the
+-- local R15 rig. Restore, despawn, re-execute are reversible.
+------------------------------------------------------------------
+;(function()
+    local panel = visualModules.panel
+    if not panel then return end
+
+    local standSkinModule
+    local wantedUsername = player.Name
+    -- Fixed settings replace the old, misleading fit/offset/tracking controls.
+    -- The existing full R15 rig + accessory path and compatible animations
+    -- are the modes the user confirmed worked; body-part weld mode stays off.
+    local wantAccessories = true
+    local scale = 0.95
+    local fitMode = "Original Size"
+    local motionMode = "Copy Compatible Animations"
+    local anchorMode = "Follow Torso"
+    -- Animation pose mirroring belongs to PreSimulation; visual position belongs
+    -- after physics, immediately before rendering. Never move the visual rig
+    -- in the same early callback that copies Motor6D transforms.
+    local visualPoseConnection
+    local visualFollowBound = false
+    local visualFollowStepName = "TrueSightStandSkinVisualFollowV41"
+    local standCollisionConnections = {}
+    local skinCollisionConnections = {}
+    local savedStandCollisions = {}
+    local standAnimationConnections = {}
+    local activeStandTracks = {}
+    local builtAvatar
+    local builtAvatarR6
+    local savedUserId
+    local currentMorph
+    local visualRoot
+    local visualStandWeld -- Child of the cloned avatar; never modify existing YBA joints.
+    local savedVisibility = {}
+    local originalVisualConnections = {}
+    local replaceOriginalStand = true -- Only affects this client's stand rendering.
+    local watchers = {}
+    local activeGeneration = 0
+    local queued = false
+    local lastRetryMorph, retryCount = nil, 0
+
+    local function status(message)
+        if notifyConfig then notifyConfig("Stand Skin: " .. message, false) end
+    end
+    local function disconnectAll()
+        for _, conn in ipairs(watchers) do pcall(function() conn:Disconnect() end) end
+        table.clear(watchers)
+    end
+    local function restoreSkin()
+        -- Disconnect BOTH frame phases before restoring/destroying the rig.
+        -- Also prevents render-step callbacks surviving re-execute/respawn.
+        if visualFollowBound then
+            pcall(function() RunService:UnbindFromRenderStep(visualFollowStepName) end)
+            visualFollowBound = false
+        end
+        if visualPoseConnection then
+            pcall(function() visualPoseConnection:Disconnect() end)
+            visualPoseConnection = nil
+        end
+        -- Destroy our own joint before touching the visual rig. This must not
+        -- disturb any joints YBA uses to connect the stand to its summoner.
+        if visualStandWeld then
+            pcall(function() visualStandWeld:Destroy() end)
+            visualStandWeld = nil
+        end
+        for _, connection in ipairs(standCollisionConnections) do
+            pcall(function() connection:Disconnect() end)
+        end
+        table.clear(standCollisionConnections)
+        for _, connection in ipairs(skinCollisionConnections) do
+            pcall(function() connection:Disconnect() end)
+        end
+        table.clear(skinCollisionConnections)
+        -- Stand collision is temporary and reversible. Do not touch hitbox
+        -- CanTouch/CanQuery properties; the game's own combat logic stays intact.
+        for part, originallyCollidable in pairs(savedStandCollisions) do
+            if part and part.Parent then
+                pcall(function() part.CanCollide = originallyCollidable end)
+            end
+            savedStandCollisions[part] = nil
+        end
+        for _, connection in ipairs(standAnimationConnections) do
+            pcall(function() connection:Disconnect() end)
+        end
+        table.clear(standAnimationConnections)
+        for sourceTrack, destinationTrack in pairs(activeStandTracks) do
+            pcall(function() destinationTrack:Stop(0) end)
+            pcall(function() destinationTrack:Destroy() end)
+            activeStandTracks[sourceTrack] = nil
+        end
+        -- Stop enforcing the old stand's visibility before restoring properties.
+        for _, connection in ipairs(originalVisualConnections) do
+            pcall(function() connection:Disconnect() end)
+        end
+        table.clear(originalVisualConnections)
+        if visualRoot then visualRoot:Destroy(); visualRoot = nil end
+        for obj, original in pairs(savedVisibility) do
+            if obj and obj.Parent then
+                pcall(function()
+                    if original.kind == "part" then
+                        obj.Transparency = original.transparency
+                        obj.LocalTransparencyModifier = original.modifier
+                    elseif original.kind == "texture" then
+                        obj.Transparency = original.transparency
+                    elseif original.kind == "effect" then
+                        obj.Enabled = original.enabled
+                    end
+                end)
+            end
+            savedVisibility[obj] = nil
+        end
+        currentMorph = nil
+    end
+    local function findMorph()
+        local living = workspace:FindFirstChild("Living")
+        local owner = living and living:FindFirstChild(player.Name)
+        local ch = player.Character
+        -- The actual summoned stand is expected at StandMorph, not the static
+        -- ReplicatedStorage template used by Stand Preview.
+        local containers = {}
+        if owner then table.insert(containers, owner) end
+        if ch and ch ~= owner then table.insert(containers, ch) end
+        for _, container in ipairs(containers) do
+            if container then
+                local stand = container:FindFirstChild("StandMorph", true)
+                if stand and stand:IsA("Model") and stand:IsDescendantOf(workspace) then
+                    return stand
+                end
+            end
+        end
+        return nil
+    end
+    -- YBA StandMorphs often have a *Folder/Model* named Head, UpperTorso,
+    -- LeftUpperArm, etc., with arbitrarily named MeshParts inside. A direct
+    -- FindFirstChild(name) can therefore return a Folder, not a usable bone.
+    local function normalizedPartName(value)
+        local clean = string.lower(tostring(value or "")):gsub("[^%w]", "")
+        return clean
+    end
+    local bodyAliases = {
+        head = "head", torso = "torso", uppertorso = "uppertorso", lowertorso = "lowertorso",
+        leftarm = "leftarm", leftupperarm = "leftupperarm", leftlowerarm = "leftlowerarm", lefthand = "lefthand",
+        rightarm = "rightarm", rightupperarm = "rightupperarm", rightlowerarm = "rightlowerarm", righthand = "righthand",
+        leftleg = "leftleg", leftupperleg = "leftupperleg", leftlowerleg = "leftlowerleg", leftfoot = "leftfoot",
+        rightleg = "rightleg", rightupperleg = "rightupperleg", rightlowerleg = "rightlowerleg", rightfoot = "rightfoot",
+    }
+    local sourceAlternates = {
+        UpperTorso = {"uppertorso", "torso"}, LowerTorso = {"lowertorso", "torso", "uppertorso"},
+        LeftUpperArm = {"leftupperarm", "leftarm"}, LeftLowerArm = {"leftlowerarm", "leftarm", "leftupperarm"},
+        LeftHand = {"lefthand", "leftarm", "leftlowerarm", "leftupperarm"},
+        RightUpperArm = {"rightupperarm", "rightarm"}, RightLowerArm = {"rightlowerarm", "rightarm", "rightupperarm"},
+        RightHand = {"righthand", "rightarm", "rightlowerarm", "rightupperarm"},
+        LeftUpperLeg = {"leftupperleg", "leftleg"}, LeftLowerLeg = {"leftlowerleg", "leftleg", "leftupperleg"},
+        LeftFoot = {"leftfoot", "leftleg", "leftlowerleg", "leftupperleg"},
+        RightUpperLeg = {"rightupperleg", "rightleg"}, RightLowerLeg = {"rightlowerleg", "rightleg", "rightupperleg"},
+        RightFoot = {"rightfoot", "rightleg", "rightlowerleg", "rightupperleg"},
+        ["Left Arm"] = {"leftarm", "leftupperarm"}, ["Right Arm"] = {"rightarm", "rightupperarm"},
+        ["Left Leg"] = {"leftleg", "leftupperleg"}, ["Right Leg"] = {"rightleg", "rightupperleg"},
+        Torso = {"torso", "uppertorso", "lowertorso"}, Head = {"head"},
+    }
+    local function anatomicalGroup(name)
+        return bodyAliases[normalizedPartName(name)]
+    end
+    local function visibleStandPart(part)
+        if not part:IsA("BasePart") or part.Transparency >= 0.995 then return false end
+        local n = normalizedPartName(part.Name)
+        if n == "humanoidrootpart" or n == "rootpart" or n == "primarypart"
+            or n:find("hitbox", 1, true) or n:find("hurtbox", 1, true)
+            or n:find("collision", 1, true) or n:find("effect", 1, true)
+            or n:find("projectile", 1, true) then return false end
+        local size = part.Size
+        return size.X >= 0.04 and size.Y >= 0.04 and size.Z >= 0.04
+            and size.Magnitude < 80
+    end
+    local function standBodyData(morph)
+        local visible = {}
+        local buckets = {}
+        for _, part in ipairs(morph:GetDescendants()) do
+            if visibleStandPart(part) and not (visualRoot and part:IsDescendantOf(visualRoot)) then
+                table.insert(visible, part)
+                -- Look at the part AND its named folders/models. The nearest
+                -- anatomical container wins; mesh names often mean nothing.
+                local node = part
+                while node and node ~= morph do
+                    local group = anatomicalGroup(node.Name)
+                    if group then
+                        buckets[group] = buckets[group] or {}
+                        table.insert(buckets[group], part)
+                        break
+                    end
+                    node = node.Parent
+                end
+            end
+        end
+        local chosen, centres = {}, {}
+        for group, parts in pairs(buckets) do
+            local best, bestScore
+            local total, weighted = 0, Vector3.zero
+            for _, part in ipairs(parts) do
+                local sz = part.Size
+                local volume = sz.X * sz.Y * sz.Z
+                -- Tiny decorations should not determine the bone anchor.
+                local weight = math.clamp(math.sqrt(volume), 0.03, 2)
+                total += weight
+                weighted += part.Position * weight
+                local score = volume
+                if part:IsA("Part") then score *= 1.2 end
+                if not bestScore or score > bestScore then
+                    best, bestScore = part, score
+                end
+            end
+            chosen[group] = best
+            if best and total > 0 then
+                -- Offset once, relative to the actual moving bone. No per-frame scan.
+                local localOffset = best.CFrame:PointToObjectSpace(weighted / total)
+                if localOffset.Magnitude > 2.5 then localOffset = localOffset.Unit * 2.5 end
+                centres[group] = localOffset
+            end
+        end
+        return visible, chosen, centres, buckets
+    end
+    local function selectBone(chosen, sourceName)
+        local keys = sourceAlternates[sourceName]
+            or {normalizedPartName(sourceName)}
+        for _, key in ipairs(keys) do
+            local part = chosen[key]
+            if part and part.Parent then return part, key end
+        end
+        return nil, nil
+    end
+    local function fallbackGroup(name)
+        local lower = normalizedPartName(name)
+        if lower == "head" then return "head" end
+        if lower:find("torso", 1, true) then return "torso" end
+        if lower:find("left", 1, true) and (lower:find("arm", 1, true) or lower:find("hand", 1, true)) then return "leftarm" end
+        if lower:find("right", 1, true) and (lower:find("arm", 1, true) or lower:find("hand", 1, true)) then return "rightarm" end
+        if lower:find("left", 1, true) and (lower:find("leg", 1, true) or lower:find("foot", 1, true)) then return "leftleg" end
+        if lower:find("right", 1, true) and (lower:find("leg", 1, true) or lower:find("foot", 1, true)) then return "rightleg" end
+        return nil
+    end
+    local function fallbackAnatomy(parts)
+        -- Only try this when there are enough separate meshes to represent
+        -- an articulated stand. A single-mesh statue cannot inherit limb poses.
+        if #parts < 5 then return {} end
+        local cf
+        local largest = -1
+        for _, part in ipairs(parts) do
+            local sz = part.Size
+            local v = sz.X * sz.Y * sz.Z
+            if v > largest then largest = v; cf = part.CFrame end
+        end
+        if not cf then return {} end
+        local minX, minY, minZ = math.huge, math.huge, math.huge
+        local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+        local positions = {}
+        for _, part in ipairs(parts) do
+            local pt = cf:PointToObjectSpace(part.Position)
+            positions[part] = pt
+            minX, minY, minZ = math.min(minX, pt.X), math.min(minY, pt.Y), math.min(minZ, pt.Z)
+            maxX, maxY, maxZ = math.max(maxX, pt.X), math.max(maxY, pt.Y), math.max(maxZ, pt.Z)
+        end
+        local centre = Vector3.new((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5)
+        local w, h, d = math.max(maxX - minX, 0.5), math.max(maxY - minY, 0.5), math.max(maxZ - minZ, 0.5)
+        local targets = {
+            head = Vector3.new(0, 0.43, 0), torso = Vector3.new(0, 0.09, 0),
+            leftarm = Vector3.new(-0.32, 0.11, 0), rightarm = Vector3.new(0.32, 0.11, 0),
+            leftleg = Vector3.new(-0.15, -0.32, 0), rightleg = Vector3.new(0.15, -0.32, 0),
+        }
+        local used, result = {}, {}
+        for _, name in ipairs({"head", "torso", "leftarm", "rightarm", "leftleg", "rightleg"}) do
+            local best, score
+            for _, part in ipairs(parts) do
+                if not used[part] then
+                    local pt = positions[part] - centre
+                    local unit = Vector3.new(pt.X / w, pt.Y / h, pt.Z / d)
+                    local distance = (unit - targets[name]).Magnitude
+                    -- Don't let one giant central mesh represent every limb.
+                    if not score or distance < score then best, score = part, distance end
+                end
+            end
+            if best and score < 0.55 then result[name] = best; used[best] = true end
+        end
+        return result
+    end
+    local function sourceAnchor(avatar, source, group)
+        local preferred = {
+            head = "Head", torso = "UpperTorso", leftarm = "LeftUpperArm",
+            rightarm = "RightUpperArm", leftleg = "LeftUpperLeg", rightleg = "RightUpperLeg",
+        }
+        local anchor = avatar:FindFirstChild(preferred[group] or "")
+        if not (anchor and anchor:IsA("BasePart")) then
+            local r6 = {torso="Torso", leftarm="Left Arm", rightarm="Right Arm", leftleg="Left Leg", rightleg="Right Leg"}
+            anchor = avatar:FindFirstChild(r6[group] or "")
+        end
+        if anchor and anchor:IsA("BasePart") and anchor ~= source then
+            return anchor.CFrame:ToObjectSpace(source.CFrame)
+        end
+        return nil
+    end
+    -- Clone a *render-only* part, preserving meshes/decals/attachments while
+    -- stripping script and physics joints. The original StandMorph remains the
+    -- animated driver. The fit factor is shared by body and accessories.
+    local function linkVisual(source, bone, parent, relative, sizeFactor)
+        if not source or not bone or not bone.Parent then return nil end
+        local cloned = source:Clone()
+        cloned.Name = "TrueSightAvatar_" .. source.Name
+        for _, descendant in ipairs(cloned:GetDescendants()) do
+            if descendant:IsA("JointInstance") or descendant:IsA("WeldConstraint")
+                or descendant:IsA("Script") or descendant:IsA("LocalScript")
+                or descendant:IsA("ModuleScript") then
+                descendant:Destroy()
+            end
+        end
+        local factor = sizeFactor or scale
+        cloned.Anchored = false
+        cloned.CanCollide = false
+        cloned.CanTouch = false
+        cloned.CanQuery = false
+        cloned.Massless = true
+        cloned.CastShadow = false
+        cloned.Size = source.Size * factor
+        -- A SpecialMesh's Scale/Offset and attachments do not reliably scale
+        -- with BasePart.Size. Scaling these too keeps hairstyles and head faces
+        -- registered to the resized body parts.
+        for _, desc in ipairs(cloned:GetDescendants()) do
+            if desc:IsA("Attachment") then
+                desc.Position *= factor
+            elseif desc:IsA("SpecialMesh") then
+                desc.Scale *= factor
+                desc.Offset *= factor
+            end
+        end
+        cloned.CFrame = bone.CFrame * (relative or CFrame.identity)
+        cloned.Parent = parent
+        local weld = Instance.new("WeldConstraint")
+        weld.Name = "TrueSightSkinWeld"
+        weld.Part0 = bone
+        weld.Part1 = cloned
+        weld.Parent = cloned
+        return cloned
+    end
+
+    local function getStandOrientation(morph, chosen)
+        local root = morph:FindFirstChild("HumanoidRootPart", true)
+        if not (root and root:IsA("BasePart")) then
+            local ch = player.Character
+            root = ch and ch:FindFirstChild("HumanoidRootPart")
+        end
+        if root and root:IsA("BasePart") then return root.CFrame.Rotation end
+        local torso = chosen.torso or chosen.uppertorso
+        return (torso and torso.CFrame.Rotation) or morph:GetPivot().Rotation
+    end
+
+    local function getFittedScale(avatar, chosen)
+        if fitMode == "Compact" then return 0.7 * scale end
+        if fitMode == "Original Size" then return scale end
+        local aHead = avatar:FindFirstChild("Head")
+        local aTorso = avatar:FindFirstChild("UpperTorso") or avatar:FindFirstChild("Torso")
+        local sHead, sTorso = chosen.head, chosen.uppertorso or chosen.torso
+        -- Use centre-to-centre bone separation rather than decorative mesh Size;
+        -- meshes can be tiny pieces or extremely large cosmetic plates.
+        if aHead and aTorso and sHead and sTorso then
+            local aDistance = (aHead.Position - aTorso.Position).Magnitude
+            local sDistance = (sHead.Position - sTorso.Position).Magnitude
+            if aDistance > 0.3 and sDistance > 0.3 then
+                return math.clamp(sDistance / aDistance, 0.62, 0.92) * scale
+            end
+        end
+        return 0.82 * scale
+    end
+
+    local function renderAccessories(avatar, accessoryAvatar, bodyClones, root, fittedScale)
+        if not wantAccessories then return 0, 0 end
+        -- Some R6-generated templates omit accessory assets; use the R15 model
+        -- made from the same HumanoidDescription as the accessory source.
+        accessoryAvatar = accessoryAvatar or avatar
+        local byName = {}
+        local attachmentTargets = {}
+        for original, cloned in pairs(bodyClones) do
+            byName[original.Name] = cloned
+            for _, node in ipairs(cloned:GetDescendants()) do
+                if node:IsA("Attachment") and not attachmentTargets[node.Name] then
+                    attachmentTargets[node.Name] = {part = cloned, node = node}
+                end
+            end
+        end
+        local rendered, discovered = 0, 0
+        for _, obj in ipairs(accessoryAvatar:GetChildren()) do
+            if obj:IsA("Accessory") then
+                discovered += 1
+                if rendered < 16 then
+                    local handle = obj:FindFirstChild("Handle")
+                    if handle and handle:IsA("BasePart") then
+                        local anchor, intended
+                        for _, att in ipairs(handle:GetChildren()) do
+                            if att:IsA("Attachment") then
+                                local target = attachmentTargets[att.Name]
+                                if target then
+                                    anchor = target.part
+                                    -- The attachment positions in the cloned body have
+                                    -- already been scaled. Handle attachment is likewise
+                                    -- scaled in linkVisual, so adjust the offset here.
+                                    local scaledHandleAttach = CFrame.new(att.Position * fittedScale) * att.CFrame.Rotation
+                                    intended = target.node.CFrame * scaledHandleAttach:Inverse()
+                                    break
+                                end
+                            end
+                        end
+                        if not anchor then
+                            -- Legacy hats lack matching attachments. They may
+                            -- already have an AccessoryWeld; otherwise default
+                            -- to head-relative placement, never world coordinates.
+                            local kind = tostring(obj.AccessoryType)
+                            local upper = kind:find("Back") or kind:find("Front")
+                                or kind:find("Waist") or kind:find("Shoulder")
+                            local preferred = upper and (byName.UpperTorso or byName.Torso) or byName.Head
+                            anchor = preferred
+                            local partName = upper and (accessoryAvatar:FindFirstChild("UpperTorso")
+                                and "UpperTorso" or "Torso") or "Head"
+                            local originalPart = accessoryAvatar:FindFirstChild(partName)
+                            if anchor and originalPart and originalPart:IsA("BasePart") then
+                                local oldWeld = handle:FindFirstChild("AccessoryWeld")
+                                if oldWeld and oldWeld:IsA("Weld") and oldWeld.Part1 == originalPart then
+                                    intended = oldWeld.C1 * oldWeld.C0:Inverse()
+                                else
+                                    local rel = originalPart.CFrame:ToObjectSpace(handle.CFrame)
+                                    intended = CFrame.new(rel.Position * fittedScale) * rel.Rotation
+                                end
+                            end
+                        end
+                        if anchor and intended then
+                            local ok, cloned = pcall(linkVisual, handle, anchor, root, intended, fittedScale)
+                            if ok and cloned then rendered += 1 end
+                        end
+                    end
+                end
+            end
+        end
+        return rendered, discovered
+    end
+    -- Hide the native stand's appearance, never its physical/animated rig.
+    -- The v27 one-shot LocalTransparencyModifier pass could be undone by the
+    -- game's stand fade logic, and it missed decals, particles, and late meshes.
+    local function skipOriginalVisual(obj)
+        if not currentMorph or not obj:IsDescendantOf(currentMorph) then return true end
+        if visualRoot and obj:IsDescendantOf(visualRoot) then return true end
+        local node = obj
+        while node and node ~= currentMorph do
+            local n = normalizedPartName(node.Name)
+            -- Leave ability/projectile VFX and collision / root helpers alone.
+            if n == "humanoidrootpart" or n == "rootpart" or n == "primarypart"
+                or n:find("hitbox", 1, true) or n:find("hurtbox", 1, true)
+                or n:find("projectile", 1, true) or n:find("effect", 1, true)
+                or n:find("collision", 1, true) or n:find("attack", 1, true)
+                or n:find("truesight", 1, true) then
+                return true
+            end
+            node = node.Parent
+        end
+        return false
+    end
+    local function enforceOriginalHidden(obj)
+        if not replaceOriginalStand or not currentMorph or not visualRoot
+            or not visualRoot.Parent or not obj.Parent then return end
+        if skipOriginalVisual(obj) then return end
+        local snapshot = savedVisibility[obj]
+        if not snapshot then return end
+        pcall(function()
+            if snapshot.kind == "part" then
+                -- Both values are needed: some games reset one while summoning.
+                if obj.Transparency ~= 1 then obj.Transparency = 1 end
+                if obj.LocalTransparencyModifier ~= 1 then obj.LocalTransparencyModifier = 1 end
+            elseif snapshot.kind == "texture" then
+                if obj.Transparency ~= 1 then obj.Transparency = 1 end
+            elseif snapshot.kind == "effect" then
+                if obj.Enabled then obj.Enabled = false end
+            end
+        end)
+    end
+    local function hideOriginalVisual(obj)
+        if not replaceOriginalStand or not currentMorph or not visualRoot
+            or not visualRoot.Parent or not obj.Parent then return end
+        if skipOriginalVisual(obj) then return end
+        if savedVisibility[obj] then
+            enforceOriginalHidden(obj)
+            return
+        end
+        local original
+        if obj:IsA("BasePart") then
+            original = {kind = "part", transparency = obj.Transparency,
+                modifier = obj.LocalTransparencyModifier}
+        elseif obj:IsA("Decal") or obj:IsA("Texture") then
+            original = {kind = "texture", transparency = obj.Transparency}
+        elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
+            or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles")
+            or obj:IsA("Highlight") then
+            -- Skip TrueSight effects and combat VFX via skipOriginalVisual.
+            original = {kind = "effect", enabled = obj.Enabled}
+        else
+            return
+        end
+        savedVisibility[obj] = original
+        if original.kind == "part" then
+            table.insert(originalVisualConnections,
+                obj:GetPropertyChangedSignal("Transparency"):Connect(function()
+                    enforceOriginalHidden(obj)
+                end))
+            table.insert(originalVisualConnections,
+                obj:GetPropertyChangedSignal("LocalTransparencyModifier"):Connect(function()
+                    enforceOriginalHidden(obj)
+                end))
+        elseif original.kind == "texture" then
+            table.insert(originalVisualConnections,
+                obj:GetPropertyChangedSignal("Transparency"):Connect(function()
+                    enforceOriginalHidden(obj)
+                end))
+        else
+            table.insert(originalVisualConnections,
+                obj:GetPropertyChangedSignal("Enabled"):Connect(function()
+                    enforceOriginalHidden(obj)
+                end))
+        end
+        enforceOriginalHidden(obj)
+    end
+    -- The replacement avatar is VISUAL ONLY. Existing stand physics can still
+    -- push a player even when its mesh is fully transparent, so disable local
+    -- collisions on both the original StandMorph and the visual avatar.
+    -- Original CanCollide values are restored on disable, unload or respawn.
+    local function suppressOriginalStandCollisions(morph)
+        local function handlePart(obj)
+            if not obj:IsA("BasePart") or (visualRoot and obj:IsDescendantOf(visualRoot))
+                or savedStandCollisions[obj] ~= nil then return end
+            savedStandCollisions[obj] = obj.CanCollide
+            local function enforce()
+                if currentMorph == morph and obj.Parent and obj.CanCollide then
+                    obj.CanCollide = false
+                end
+            end
+            table.insert(standCollisionConnections,
+                obj:GetPropertyChangedSignal("CanCollide"):Connect(enforce))
+            enforce()
+        end
+        -- StandMorphs may insert fresh parts during summon/ability startup.
+        table.insert(standCollisionConnections,
+            morph.DescendantAdded:Connect(handlePart))
+        for _, obj in ipairs(morph:GetDescendants()) do handlePart(obj) end
+    end
+
+    local function suppressSkinCollisions(skin)
+        local function handlePart(obj)
+            if not obj:IsA("BasePart") then return end
+            obj.CanCollide = false
+            obj.CanTouch = false
+            obj.CanQuery = false
+            obj.Massless = true
+            table.insert(skinCollisionConnections,
+                obj:GetPropertyChangedSignal("CanCollide"):Connect(function()
+                    if visualRoot == skin and obj.Parent and obj.CanCollide then
+                        obj.CanCollide = false
+                    end
+                end))
+        end
+        table.insert(skinCollisionConnections, skin.DescendantAdded:Connect(handlePart))
+        for _, obj in ipairs(skin:GetDescendants()) do handlePart(obj) end
+    end
+
+    local function hideOriginalStand(morph)
+        if not replaceOriginalStand then return 0 end
+        -- Listen first: accessories/meshes can appear after StandMorph creation.
+        table.insert(originalVisualConnections,
+            morph.DescendantAdded:Connect(function(obj)
+                if currentMorph == morph then hideOriginalVisual(obj) end
+            end))
+        for _, obj in ipairs(morph:GetDescendants()) do
+            hideOriginalVisual(obj)
+        end
+        local hiddenCount = 0
+        for _ in pairs(savedVisibility) do hiddenCount += 1 end
+        return hiddenCount
+    end
+
+    -- Only animated, properly jointed R15 limbs are used for the replacement.
+    -- Sticky Fingers and other YBA stands may put their visible pieces at odd
+    -- angles. Fitting R15 limbs to those independent meshes tears the rig apart.
+    local function usableStandAnchor(morph, chosen, torso)
+        if anchorMode == "Follow Torso" then return torso end
+        local root = morph:FindFirstChild("HumanoidRootPart", true)
+        if not (root and root:IsA("BasePart")) then
+            root = morph.PrimaryPart
+        end
+        if root and root:IsA("BasePart")
+            and (root.Position - torso.Position).Magnitude <= 12 then
+            return root
+        end
+        return torso
+    end
+
+    local function replayCompatibleStandTracks(sourceAnimator, targetAnimator)
+        if motionMode ~= "Copy Compatible Animations" or not sourceAnimator or not targetAnimator then
+            return
+        end
+        local function attemptTrack(sourceTrack)
+            if not visualRoot or not visualRoot.Parent or activeStandTracks[sourceTrack] then return end
+            local count = 0
+            for _ in pairs(activeStandTracks) do count += 1 end
+            if count >= 4 then return end
+            -- Only shared R15-compatible pose channels can move the skin. A
+            -- YBA-only animation won't match R15 joints and is simply ignored.
+            local sourceAnimation = sourceTrack.Animation
+            if not (sourceAnimation and sourceAnimation:IsA("Animation")) then return end
+            local asset = sourceAnimation.AnimationId
+            if not asset or asset == "" then return end
+            local ok, played = pcall(function()
+                local loaded = targetAnimator:LoadAnimation(sourceAnimation)
+                loaded.Looped = sourceTrack.Looped
+                loaded.Priority = sourceTrack.Priority
+                loaded:Play(0.05, 1, math.clamp(sourceTrack.Speed, 0.1, 4))
+                pcall(function() loaded.TimePosition = sourceTrack.TimePosition end)
+                return loaded
+            end)
+            if not ok or not played then return end
+            activeStandTracks[sourceTrack] = played
+            -- Using an event avoids any per-frame or per-character polling.
+            table.insert(standAnimationConnections, sourceTrack.Stopped:Connect(function()
+                if activeStandTracks[sourceTrack] == played then
+                    activeStandTracks[sourceTrack] = nil
+                end
+                pcall(function() played:Stop(0.12) end)
+                pcall(function() played:Destroy() end)
+            end))
+        end
+        table.insert(standAnimationConnections, sourceAnimator.AnimationPlayed:Connect(attemptTrack))
+        for _, playing in ipairs(sourceAnimator:GetPlayingAnimationTracks()) do
+            attemptTrack(playing)
+        end
+    end
+
+    local function applySkin(morph)
+        if not standSkinModule.enabled or not builtAvatar or not morph or not morph.Parent then
+            return false
+        end
+        if morph == currentMorph and visualRoot and visualRoot.Parent then return true end
+        restoreSkin()
+
+        -- Stand animations remain alive on the game's ORIGINAL (hidden) rig.
+        -- Do not accidentally pick an Animator from our cloned R15 rig.
+        local sourceAnimator = morph:FindFirstChildWhichIsA("Animator", true)
+        local parts, chosen, centres, buckets = standBodyData(morph)
+        -- v37: Pick the REAL articulated R15 torso when available. Named
+        -- UpperTorso folders in YBA contain armour meshes whose rotations may
+        -- be unrelated to where the stand is actually facing. A Waist Motor6D
+        -- connecting LowerTorso -> UpperTorso is far more reliable.
+        local articulatedTorso
+        for _, node in ipairs(morph:GetDescendants()) do
+            if node:IsA("Motor6D") and node.Name == "Waist"
+                and node.Part0 and node.Part1
+                and node.Part0.Name == "LowerTorso"
+                and node.Part1.Name == "UpperTorso"
+                and node.Part0:IsDescendantOf(morph)
+                and node.Part1:IsDescendantOf(morph) then
+                articulatedTorso = node.Part1
+                break
+            end
+        end
+        local standTorso = articulatedTorso
+            or chosen.uppertorso or chosen.torso or chosen.lowertorso
+        if not standTorso then
+            local bestScore = -1
+            for _, candidate in ipairs(parts) do
+                local size = candidate.Size
+                local volume = size.X * size.Y * size.Z
+                if volume > bestScore then
+                    bestScore, standTorso = volume, candidate
+                end
+            end
+        end
+        if not (standTorso and standTorso:IsA("BasePart")) then
+            status("No stable stand body part found; original stand kept visible.")
+            return false
+        end
+
+        local okClone, skin = pcall(function() return builtAvatar:Clone() end)
+        if not okClone or not skin then
+            status("Couldn't clone the full R15 avatar.")
+            return false
+        end
+        skin.Name = "TrueSightAvatarStandSkin"
+        local avatarRoot = skin:FindFirstChild("HumanoidRootPart")
+        local avatarTorso = skin:FindFirstChild("UpperTorso")
+        local humanoid = skin:FindFirstChildOfClass("Humanoid")
+        if not (avatarRoot and avatarRoot:IsA("BasePart")
+            and avatarTorso and avatarTorso:IsA("BasePart")
+            and humanoid and humanoid.RigType == Enum.HumanoidRigType.R15) then
+            skin:Destroy()
+            status("The chosen avatar didn't generate a complete R15 skeleton.")
+            return false
+        end
+
+        -- Preserve and move the complete rig as one model. ScaleTo adjusts
+        -- *joint offsets, attachment points, body parts and accessories*.
+        local fitting = math.clamp(getFittedScale(builtAvatar, chosen), 0.6, 1.35)
+        if fitMode == "Auto" then fitting = math.clamp(0.82 * scale, 0.6, 1.3) end
+        local okScale, scaleError = pcall(function() skin:ScaleTo(fitting) end)
+        if not okScale then
+            skin:Destroy()
+            status("R15 rig scale failed: " .. tostring(scaleError))
+            return false
+        end
+
+        local accessories = 0
+        for _, obj in ipairs(skin:GetChildren()) do
+            if obj:IsA("Accessory") then
+                accessories += 1
+                if not wantAccessories or accessories > 16 then obj:Destroy() end
+            end
+        end
+        for _, obj in ipairs(skin:GetDescendants()) do
+            if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                obj:Destroy()
+            elseif obj:IsA("BasePart") then
+                obj.Anchored = false
+                obj.CanCollide = false
+                obj.CanTouch = false
+                obj.CanQuery = false
+                obj.Massless = true
+                obj.CastShadow = false
+            end
+        end
+        -- A passive humanoid keeps normal avatar rendering, including layered
+        -- clothes, but will not apply movement or physics forces to the stand.
+        pcall(function() humanoid.EvaluateStateMachine = false end)
+        humanoid.AutoRotate = false
+        humanoid.BreakJointsOnDeath = false
+        humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+        humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+        humanoid.NameDisplayDistance = 0
+        avatarRoot.Transparency = 1
+        avatarRoot.LocalTransparencyModifier = 1
+        -- Initially anchor the cloned root for placement. During ordinary
+        -- movement it becomes unanchored and welded to the genuine stand root.
+        -- All body parts remain noncollidable, massless and non-touching.
+        avatarRoot.Anchored = true
+        avatarRoot.RootPriority = -127
+        skin.PrimaryPart = avatarRoot
+
+        -- Freeze selection of a few anatomical meshes when the stand is summoned.
+        -- Their positions can be sampled cheaply without rescanning the model.
+        -- Many YBA stands contain 3-8 meshes under a folder called UpperTorso;
+        -- the largest single mesh may be offset by decorative armour.
+        local torsoGroup = (standTorso == chosen.uppertorso and "uppertorso")
+            or (standTorso == chosen.torso and "torso")
+            or (standTorso == chosen.lowertorso and "lowertorso")
+        local samples = {}
+        local torsoBucket = torsoGroup and buckets[torsoGroup]
+        if torsoBucket then
+            local candidates = {}
+            for _, bodyPart in ipairs(torsoBucket) do
+                if bodyPart.Parent and (bodyPart.Position - standTorso.Position).Magnitude < 5.5 then
+                    local sz = bodyPart.Size
+                    local volume = sz.X * sz.Y * sz.Z
+                    local weight = math.clamp(math.sqrt(math.max(volume, 0.0001)), 0.06, 1.6)
+                    table.insert(candidates, {part = bodyPart, weight = weight})
+                end
+            end
+            table.sort(candidates, function(a,b) return a.weight > b.weight end)
+            for i = 1, math.min(#candidates, 10) do
+                table.insert(samples, candidates[i])
+            end
+        end
+        if #samples == 0 then
+            samples[1] = {part = standTorso, weight = 1}
+        end
+
+        -- The original stand's actual visible torso is the reference point.
+        -- Do not use player's HumanoidRootPart or cached stand-root offsets:
+        -- beatdowns often animate the stand away from both.
+        local fallbackOffset = torsoGroup and centres[torsoGroup] or Vector3.zero
+        if fallbackOffset.Magnitude > 1.3 then
+            fallbackOffset = fallbackOffset.Unit * 1.3
+        end
+        local facingRoot = morph:FindFirstChild("HumanoidRootPart", true)
+        if not (facingRoot and facingRoot:IsA("BasePart")) then
+            facingRoot = morph.PrimaryPart
+        end
+        if not (facingRoot and facingRoot:IsA("BasePart")) then facingRoot = nil end
+
+        local function horizontalFrame(cf)
+            if not cf then return nil end
+            local vector = cf.LookVector
+            local flat = Vector3.new(vector.X, 0, vector.Z)
+            if flat.Magnitude < 0.08 then return nil end
+            return CFrame.lookAt(Vector3.zero, flat.Unit)
+        end
+        local spawnTorsoYaw = horizontalFrame(standTorso.CFrame)
+        local spawnRootYaw = facingRoot and horizontalFrame(facingRoot.CFrame)
+        -- Non-standard stand roots can face backwards relative to the player.
+        -- Calibrate this once on summon, never per-frame (beatdowns deliberately
+        -- change relative player/stand facing). The genuine R15 torso path
+        -- below does not require this heuristic.
+        local rootFacingCorrection = CFrame.identity
+        if not articulatedTorso and facingRoot and facingRoot.Parent then
+            local characterRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            local playerYaw = characterRoot and horizontalFrame(characterRoot.CFrame)
+            if playerYaw and spawnRootYaw
+                and (characterRoot.Position - facingRoot.Position).Magnitude < 22
+                and playerYaw.LookVector:Dot(spawnRootYaw.LookVector) < -0.6 then
+                rootFacingCorrection = CFrame.Angles(0, math.pi, 0)
+            end
+        end
+        -- Calibrate a model's custom mesh rotation only once, not on every
+        -- running frame. Many stand torso meshes face 90 degrees sideways.
+        local torsoToStandYaw = (spawnTorsoYaw and spawnRootYaw)
+            and spawnTorsoYaw:ToObjectSpace(spawnRootYaw) or CFrame.identity
+        local previousYaw = spawnRootYaw or spawnTorsoYaw or CFrame.identity
+        local normalRootDistance = facingRoot and
+            (facingRoot.Position - standTorso.Position).Magnitude or 0
+        local detachDistance = math.clamp(normalRootDistance + 4, 8, 15)
+
+        local function liveStandCentre()
+            local total, centre = 0, Vector3.zero
+            for _, entry in ipairs(samples) do
+                local part = entry.part
+                if part and part.Parent and part:IsDescendantOf(morph) then
+                    total += entry.weight
+                    centre += part.Position * entry.weight
+                end
+            end
+            if total > 0 then return centre / total end
+            return standTorso.CFrame:PointToWorldSpace(fallbackOffset)
+        end
+
+        local function liveStandYaw()
+            local rootYaw = facingRoot and facingRoot.Parent
+                and horizontalFrame(facingRoot.CFrame)
+            local torsoYaw = horizontalFrame(standTorso.CFrame)
+            local detached = facingRoot and facingRoot.Parent
+                and (facingRoot.Position - standTorso.Position).Magnitude > detachDistance
+            -- Normal movement: use the stable stand root, NOT the animated
+            -- torso mesh (which can spin sideways during running and attacks).
+            -- In a beatdown where the visible body leaves the root, follow the
+            -- torso with its calibrated rest-pose orientation offset.
+            if detached and torsoYaw then
+                previousYaw = torsoYaw * torsoToStandYaw
+            elseif rootYaw then
+                previousYaw = rootYaw
+            elseif torsoYaw then
+                previousYaw = torsoYaw * torsoToStandYaw
+            end
+            return previousYaw * rootFacingCorrection
+        end
+
+        local function targetRootFrame()
+            if articulatedTorso and articulatedTorso.Parent
+                and articulatedTorso:IsDescendantOf(morph) then
+                -- Both are real R15 UpperTorso parts. Match their WORLD
+                -- transforms directly, including the torso's rotation during
+                -- M1s and beatdowns. No guessing from the root's LookVector,
+                -- armour mesh orientation or player heading.
+                local localTorso = avatarRoot.CFrame:ToObjectSpace(avatarTorso.CFrame)
+                return articulatedTorso.CFrame * localTorso:Inverse()
+            end
+            local desiredBodyYaw = liveStandYaw()
+            local avatarTorsoLocal = avatarRoot.CFrame:ToObjectSpace(avatarTorso.CFrame)
+            -- Copying a stand track can rotate the R15 torso relative to its
+            -- HumanoidRootPart. Subtract that local rotation so the rendered
+            -- body, not merely the invisible root, faces the correct way.
+            local localTorsoYaw = horizontalFrame(avatarTorsoLocal)
+            local correctedRootYaw = localTorsoYaw
+                and (desiredBodyYaw * localTorsoYaw:Inverse()) or desiredBodyYaw
+            local targetRootPosition = liveStandCentre()
+                - correctedRootYaw:VectorToWorldSpace(avatarTorsoLocal.Position)
+            return CFrame.new(targetRootPosition) * correctedRootYaw
+        end
+
+        -- V36: Safe R15 pose transfer. v35 used mesh world CFrames as bone
+        -- positions; stand armour and folder-contained meshes are NOT joints,
+        -- so that method forced impossible Motor6D transforms and contorted
+        -- the avatar. Never solve Motor6D.Transform from a decorative mesh.
+        -- Only genuinely matching parent/child R15 Motor6Ds may transfer pose.
+        -- A non-R15/custom stand safely falls back to copied animation tracks.
+        local poseMirrors = {}
+        local sourceJoints = {}
+        local ambiguousJoints = {}
+        local safeJointNames = {
+            Waist = true, Neck = true,
+            LeftShoulder = true, LeftElbow = true, LeftWrist = true,
+            RightShoulder = true, RightElbow = true, RightWrist = true,
+            LeftHip = true, LeftKnee = true, LeftAnkle = true,
+            RightHip = true, RightKnee = true, RightAnkle = true,
+        }
+        local function rigJointKey(joint)
+            if not (joint:IsA("Motor6D") and joint.Part0 and joint.Part1) then return nil end
+            return joint.Name .. ":" .. joint.Part0.Name .. ":" .. joint.Part1.Name
+        end
+        -- Insist on the SAME joint and the SAME two limb names on both rigs.
+        -- There is deliberately no LeftArm -> LeftUpperArm fallback.
+        for _, obj in ipairs(morph:GetDescendants()) do
+            local key = rigJointKey(obj)
+            if key and safeJointNames[obj.Name] then
+                if sourceJoints[key] then ambiguousJoints[key] = true end
+                sourceJoints[key] = obj
+            end
+        end
+        for _, obj in ipairs(skin:GetDescendants()) do
+            local key = rigJointKey(obj)
+            if key and safeJointNames[obj.Name] and not ambiguousJoints[key]
+                and obj.Part0:IsDescendantOf(skin)
+                and obj.Part1:IsDescendantOf(skin) then
+                local source = sourceJoints[key]
+                if source and source.Part0:IsDescendantOf(morph)
+                    and source.Part1:IsDescendantOf(morph) then
+                    -- Even equal limb names can use different joint axes.
+                    -- Only mirror rotation when BOTH rest-pose frames align.
+                    local _, offset0 = (source.C0.Rotation:ToObjectSpace(
+                        obj.C0.Rotation)):ToAxisAngle()
+                    local _, offset1 = (source.C1.Rotation:ToObjectSpace(
+                        obj.C1.Rotation)):ToAxisAngle()
+                    if offset0 <= math.rad(25) and offset1 <= math.rad(25) then
+                        table.insert(poseMirrors, {
+                            original = source,
+                            avatar = obj,
+                            -- Rest-relative orientation maps joint motion
+                            -- between different Roblox body packages without
+                            -- mapping mesh world positions onto limbs.
+                            restRotation = (source.C0 * source.C1:Inverse()).Rotation,
+                        })
+                    end
+                end
+            end
+        end
+        -- Motor6D/AnimationConstraint joint upgrades can make exact matching
+        -- unavailable. Copying compatible AnimationTracks still works, and
+        -- avoids the world-space pose corruption seen in v35.
+        -- Position the assembled avatar before showing it. Repositioning the
+        -- root via a pivot preserves intact R15 joints/accessories.
+        local rootToPivot = avatarRoot.CFrame:ToObjectSpace(skin:GetPivot())
+        skin:PivotTo(targetRootFrame() * rootToPivot)
+        skin.Parent = workspace
+        visualRoot = skin
+        currentMorph = morph
+
+        -- v39: Calibration is taken once AFTER the assembled R15 skin is
+        -- positioned. Ordinary locomotion follows the stand's *root*, not
+        -- the animated UpperTorso. A moving Waist animation must never
+        -- drag the entire replacement avatar around during running.
+        local locomotionRootOffset
+        local originalTorsoRootOffset
+        if facingRoot and facingRoot.Parent and facingRoot:IsDescendantOf(morph) then
+            locomotionRootOffset = facingRoot.CFrame:ToObjectSpace(avatarRoot.CFrame)
+            originalTorsoRootOffset = facingRoot.CFrame:ToObjectSpace(standTorso.CFrame)
+        end
+        -- No per-mesh "rest" offsets: such offsets only work for actual
+        -- matching bone frames, not randomly oriented stand decorations.
+        suppressSkinCollisions(skin)
+        suppressOriginalStandCollisions(morph)
+        -- Motor6D.Transform must be written after Animator evaluation but
+        -- before the physics batch (PreSimulation). Keep v37's working M1 and
+        -- beatdown pose copying here, untouched by follow smoothing.
+        local nextTrackSync = 0
+        visualPoseConnection = RunService.PreSimulation:Connect(function()
+            if visualRoot ~= skin or currentMorph ~= morph then return end
+            if not skin.Parent or not morph:IsDescendantOf(workspace) or not standTorso.Parent then
+                task.defer(restoreSkin)
+                return
+            end
+            -- Do not position the avatar root here: stand/root movement can be
+            -- updated during the physics/Heartbeat phases AFTER this callback,
+            -- making the rendered skin appear a frame behind while running.
+            -- v37: Read the source's EFFECTIVE joint pose, not Transform alone.
+            -- YBA may animate C0/C1 instead of Transform during M1 attacks;
+            -- that left the v36 replacement arms in a T-pose even with 14
+            -- matched joints. Compute motion relative to the source's rest
+            -- frame and express that delta in the avatar's C1 joint basis.
+            -- Rotations only: transferring arbitrary joint translation across
+            -- differently proportioned avatars was the v35 contortion bug.
+            for _, pair in ipairs(poseMirrors) do
+                local source, target = pair.original, pair.avatar
+                if source.Parent and target.Parent and source.Part0 and source.Part1 then
+                    local okPose, liveSourceRotation = pcall(function()
+                        return (source.C0 * source.Transform * source.C1:Inverse()).Rotation
+                    end)
+                    if okPose and liveSourceRotation then
+                        local delta = pair.restRotation:Inverse() * liveSourceRotation
+                        local _, angle = delta:ToAxisAngle()
+                        if angle == angle and math.abs(angle) < math.rad(170) then
+                            local targetBasis = target.C1.Rotation
+                            local targetPose = targetBasis:Inverse() * delta * targetBasis
+                            pcall(function() target.Transform = targetPose end)
+                        end
+                    end
+                end
+            end
+            local now = os.clock()
+            if now >= nextTrackSync then
+                nextTrackSync = now + 0.25
+                for sourceTrack, avatarTrack in pairs(activeStandTracks) do
+                    pcall(function()
+                        if sourceTrack.IsPlaying and avatarTrack.IsPlaying
+                            and math.abs(sourceTrack.TimePosition - avatarTrack.TimePosition) > 0.12 then
+                            avatarTrack.TimePosition = sourceTrack.TimePosition
+                        end
+                    end)
+                end
+            end
+        end)
+
+        -- v41: Keep the v40 rigid weld for positioning, but update ONLY its
+        -- heading when the stand's visible animated torso disagrees with its
+        -- root's facing. This avoids the wrong-way look of a fixed spawn-time
+        -- yaw offset without reintroducing per-frame root CFrame jitter.
+        -- Use the game's own rigid stand-root motion instead of calculating
+        -- a new position on every render frame. YBA usually keeps the original
+        -- stand's root connected to its character. One client-only weld makes
+        -- the *visual clone* move with that root as part of the same assembly,
+        -- eliminating the extra lerp/one-frame correction that looked jittery.
+        -- For beatdowns with independently animated torso motion, detach our
+        -- weld temporarily, anchor the visual root and match the live torso.
+        -- The weld is parented to the cloned skin so cleanup is reversible.
+        local detachedMode = false
+        local function releaseVisualWeld()
+            if visualStandWeld then
+                pcall(function() visualStandWeld:Destroy() end)
+                visualStandWeld = nil
+            end
+        end
+        local function validAttachmentRoot()
+            return facingRoot and facingRoot.Parent
+                and facingRoot:IsDescendantOf(morph)
+                and locomotionRootOffset and originalTorsoRootOffset
+        end
+        -- Compute the heading the visual avatar's *body* needs, accounting
+        -- for its own currently animated R15 torso. targetRootFrame() already
+        -- does this for cutscenes; use only its yaw during welded movement.
+        local function desiredWeldYaw()
+            if not validAttachmentRoot() then return nil end
+            local standRootYaw = horizontalFrame(facingRoot.CFrame)
+            local visibleBodyYaw = horizontalFrame(targetRootFrame())
+            if standRootYaw and visibleBodyYaw then
+                return standRootYaw:ToObjectSpace(visibleBodyYaw)
+            end
+            return nil
+        end
+        -- Keep the weld's position offset absolutely fixed. Only rotate its
+        -- local C0 heading; never move or pivot an already welded R15 avatar.
+        -- The deadzone filters tiny walk-cycle torso rotations, and large
+        -- heading errors (including 180 degree reversal) correct immediately.
+        local function alignVisualWeldYaw(dt)
+            local weld = visualStandWeld
+            if not (weld and weld.Parent and weld.Part0 == facingRoot
+                and weld.Part1 == avatarRoot) then return end
+            local desiredYaw = desiredWeldYaw()
+            if not desiredYaw then return end
+            local currentYaw = horizontalFrame(weld.C0)
+            if not currentYaw then return end
+            local dot = math.clamp(currentYaw.LookVector:Dot(desiredYaw.LookVector), -1, 1)
+            local difference = math.acos(dot)
+            if difference < math.rad(2.5) then return end
+            -- No translational lerp, so the v40 physics-driven follow remains
+            -- smooth. Mild angular changes ease in; wrong-way headings snap.
+            local alpha = (difference > math.rad(65)) and 1
+                or math.clamp(1 - math.exp(-16 * math.clamp(dt or 0.016, 0, 0.1)), 0.08, 1)
+            local alignedYaw = currentYaw:Lerp(desiredYaw, alpha)
+            weld.C0 = CFrame.new(locomotionRootOffset.Position) * alignedYaw
+        end
+        local function weldVisualToStandRoot()
+            if not validAttachmentRoot() then return false end
+            if visualStandWeld and visualStandWeld.Parent
+                and visualStandWeld.Part0 == facingRoot
+                and visualStandWeld.Part1 == avatarRoot then
+                return true
+            end
+            releaseVisualWeld()
+            -- Place the clone before welding. Never CFrame a welded joint after
+            -- it's attached: that can move the original stand's assembly.
+            -- A new weld starts at the correct *current* heading instead of
+            -- freezing the rotation sampled during summon/previous cutscene.
+            local faceYaw = desiredWeldYaw()
+            local weldOffset = faceYaw
+                and (CFrame.new(locomotionRootOffset.Position) * faceYaw)
+                or locomotionRootOffset
+            avatarRoot.Anchored = true
+            avatarRoot.CFrame = facingRoot.CFrame * weldOffset
+            avatarRoot.Anchored = false
+            local weld = Instance.new("Weld")
+            weld.Name = "TrueSightVisualStandRootWeld"
+            weld.Part0 = facingRoot
+            weld.Part1 = avatarRoot
+            weld.C0 = weldOffset
+            weld.C1 = CFrame.identity
+            weld.Parent = avatarRoot
+            visualStandWeld = weld
+            return true
+        end
+        -- A single lightweight watcher is retained ONLY to detect whether the
+        -- stand enters/leaves a detached beatdown. In ordinary movement it does
+        -- not write any body CFrames or apply smoothing each frame.
+        RunService:BindToRenderStep(visualFollowStepName,
+            Enum.RenderPriority.Last.Value + 5, function(dt)
+                if visualRoot ~= skin or currentMorph ~= morph then return end
+                if not skin.Parent or not morph:IsDescendantOf(workspace)
+                    or not standTorso.Parent then
+                    task.defer(restoreSkin)
+                    return
+                end
+                local attached = validAttachmentRoot()
+                if attached then
+                    local sourceRootFrame = facingRoot.CFrame
+                    local expectedTorsoPosition =
+                        (sourceRootFrame * originalTorsoRootOffset).Position
+                    local torsoDeviation =
+                        (standTorso.Position - expectedTorsoPosition).Magnitude
+                    -- Hysteresis: preserve weld during normal M1/idle movement;
+                    -- switch to exact torso tracking only for major departures.
+                    if detachedMode then
+                        if torsoDeviation < 1.35 then detachedMode = false end
+                    elseif torsoDeviation > 3.25 then
+                        detachedMode = true
+                    end
+                    if (facingRoot.Position - standTorso.Position).Magnitude > detachDistance then
+                        detachedMode = true
+                    end
+                else
+                    detachedMode = true
+                end
+
+                if not detachedMode and attached then
+                    -- Engine-driven rigid attachment for POSITION; only the
+                    -- stand-relative facing angle is corrected when needed.
+                    if weldVisualToStandRoot() then
+                        alignVisualWeldYaw(dt)
+                    end
+                else
+                    -- Detach BEFORE anchoring; never anchor YBA's actual stand
+                    -- through a live weld or modify player physics.
+                    releaseVisualWeld()
+                    avatarRoot.Anchored = true
+                    avatarRoot.CFrame = targetRootFrame()
+                end
+            end)
+        visualFollowBound = true
+        -- Attach immediately, not one frame after the first render callback.
+        if validAttachmentRoot() then weldVisualToStandRoot() end
+
+        local targetAnimator = humanoid:FindFirstChildOfClass("Animator")
+        if not targetAnimator then
+            targetAnimator = Instance.new("Animator")
+            targetAnimator.Parent = humanoid
+        end
+        replayCompatibleStandTracks(sourceAnimator, targetAnimator)
+        local hiddenCount = hideOriginalStand(morph)
+        local synced = #poseMirrors
+        if synced == 0 then
+            warn("[TrueSight] Stand rig has no compatible R15 Motor6D pairs; "
+                .. "using track-replay fallback (custom YBA animation poses may differ).")
+        end
+        status("Full R15 rig welded (" .. tostring(math.min(accessories, wantAccessories and 16 or 0))
+            .. " accessories, " .. tostring(synced) .. " pose-sync joints, no collision; "
+            .. (replaceOriginalStand and (hiddenCount .. " original visuals hidden") or "overlay") .. ").")
+        return true
+    end
+
+    local function refreshStand()
+        if not standSkinModule.enabled or not builtAvatar then return end
+        if queued then return end
+        queued = true
+        local token = activeGeneration
+        task.delay(0.65, function()
+            queued = false
+            if token ~= activeGeneration or not standSkinModule.enabled then return end
+            local morph = findMorph()
+            if morph and morph ~= currentMorph then
+                if morph ~= lastRetryMorph then
+                    lastRetryMorph = morph
+                    retryCount = 0
+                end
+                local ok, applied = pcall(applySkin, morph)
+                if not ok then warn("[TrueSight] Avatar stand overlay failed: " .. tostring(applied)) end
+                if (not ok or not applied) and retryCount < 10 then
+                    retryCount += 1
+                    task.delay(0.65, function()
+                        if token == activeGeneration and standSkinModule.enabled then refreshStand() end
+                    end)
+                end
+            end
+        end)
+    end
+    local function watchContainer(container)
+        if not container then return end
+        table.insert(watchers, container.DescendantAdded:Connect(function(obj)
+            if obj.Name == "StandMorph" and obj:IsA("Model") then refreshStand() end
+        end))
+        table.insert(watchers, container.DescendantRemoving:Connect(function(obj)
+            if obj == currentMorph then task.defer(restoreSkin) end
+        end))
+    end
+    local function setupWatchers()
+        disconnectAll()
+        watchContainer(player.Character)
+        local living = workspace:FindFirstChild("Living")
+        if living then
+            local mine = living:FindFirstChild(player.Name)
+            if mine and mine ~= player.Character then watchContainer(mine) end
+            table.insert(watchers, living.ChildAdded:Connect(function(obj)
+                if obj.Name == player.Name then watchContainer(obj); refreshStand() end
+            end))
+        end
+        table.insert(watchers, player.CharacterAdded:Connect(function(ch)
+            watchContainer(ch)
+            task.delay(0.8, refreshStand)
+        end))
+        -- A new Living folder can be created after teleport/respawn.
+        table.insert(watchers, workspace.ChildAdded:Connect(function(obj)
+            if obj.Name == "Living" then
+                local mine = obj:FindFirstChild(player.Name)
+                if mine then watchContainer(mine) end
+                table.insert(watchers, obj.ChildAdded:Connect(function(ch)
+                    if ch.Name == player.Name then watchContainer(ch); refreshStand() end
+                end))
+                refreshStand()
+            end
+        end))
+    end
+    local function updateAvatarTemplate()
+        activeGeneration += 1
+        local token = activeGeneration
+        restoreSkin()
+        lastRetryMorph, retryCount = nil, 0
+        if builtAvatar then builtAvatar:Destroy(); builtAvatar = nil end
+        if builtAvatarR6 then builtAvatarR6:Destroy(); builtAvatarR6 = nil end
+        task.spawn(function()
+            local name = wantedUsername:gsub("^%s+", ""):gsub("%s+$", "")
+            if #name < 1 or #name > 30 then status("Enter a valid Roblox username."); return end
+            local ok, userId = pcall(function()
+                if string.lower(name) == string.lower(player.Name) then return player.UserId end
+                return Players:GetUserIdFromNameAsync(name)
+            end)
+            if not ok or not userId then status("Username lookup failed for " .. name); return end
+            local success, template = pcall(function()
+                local description = Players:GetHumanoidDescriptionFromUserId(userId)
+                -- Use a fully assembled R15 model, including native joints,
+                -- clothes, attachments and accessory welds.
+                return Players:CreateHumanoidModelFromDescriptionAsync(description, Enum.HumanoidRigType.R15)
+            end)
+            if token ~= activeGeneration or not standSkinModule.enabled then
+                if template then template:Destroy() end
+                return
+            end
+            if not success or not template then
+                -- Older/newer Roblox versions can differ in the description
+                -- model factory. Try the user-ID factory before giving up.
+                success, template = pcall(function()
+                    local description = Players:GetHumanoidDescriptionFromUserId(userId)
+                    return Players:CreateHumanoidModelFromDescription(description, Enum.HumanoidRigType.R15)
+                end)
+            end
+            if not success or not template then
+                status("Roblox could not load that avatar's rig/assets.")
+                return
+            end
+            builtAvatar = template
+            -- Do NOT build or fall back to an R6 rig: non-humanoid YBA mesh
+            -- layouts were the reason previous versions folded the body.
+            savedUserId = userId
+            setupWatchers()
+            refreshStand()
+        end)
+    end
+
+    standSkinModule = addModule(panel, "Avatar Stand Skin", function(on)
+        activeGeneration += 1
+        if on then
+            updateAvatarTemplate()
+        else
+            disconnectAll()
+            restoreSkin()
+            if builtAvatar then builtAvatar:Destroy(); builtAvatar = nil end
+            if builtAvatarR6 then builtAvatarR6:Destroy(); builtAvatarR6 = nil end
+        end
+    end)
+    -- Deliberately no extra sliders/cycles here. Fixed reliable choices:
+    -- replacement only; complete R15 rig; accessories; compatible animations;
+    -- auto-alignment to the live stand torso with no user-supplied offsets.
+    addTextInput(panel, "Stand Skin Username", "Roblox username (not display name)", player.Name, function(value)
+        wantedUsername = value
+        if standSkinModule.enabled then updateAvatarTemplate() end
+    end, "Avatar Stand Skin/Username")
+    addAction(panel, "Stand Skin • Refresh Summoned Stand", function()
+        if not standSkinModule.enabled then status("Enable Avatar Stand Skin first."); return end
+        lastRetryMorph, retryCount = nil, 0
+        restoreSkin()
+        refreshStand()
+    end)
+    modules._cleanupStandSkin = function()
+        activeGeneration += 1
+        disconnectAll()
+        restoreSkin()
+        if builtAvatar then builtAvatar:Destroy(); builtAvatar = nil end
+        if builtAvatarR6 then builtAvatarR6:Destroy(); builtAvatarR6 = nil end
+    end
+end)()
+
+------------------------------------------------------------------
 -- Extra lightweight cosmetic modules (local/client visuals only)
 ------------------------------------------------------------------
 ;(function()
@@ -4009,6 +6297,38 @@ end)()
     local blackFlashCooldown = 1.2
     local blackFlashLastTrigger = 0
     local blackFlashParticleCount = 42
+    local blackFlashColourMode = 1 -- Original, Crimson, Electric Blue, Violet, Gold, Lime, Custom
+    local blackFlashRGB = {255, 40, 90}
+    local blackFlashColours = {
+        Color3.fromRGB(255, 255, 255), Color3.fromRGB(255, 45, 65),
+        Color3.fromRGB(42, 155, 255), Color3.fromRGB(171, 73, 255),
+        Color3.fromRGB(255, 205, 51), Color3.fromRGB(72, 250, 118),
+    }
+    local function recolourBlackFlashClone(root)
+        if blackFlashColourMode == 1 or not root then return end
+        local tint = blackFlashColourMode == 7
+            and Color3.fromRGB(blackFlashRGB[1], blackFlashRGB[2], blackFlashRGB[3])
+            or blackFlashColours[blackFlashColourMode]
+        if not tint then return end
+        local function paint(obj)
+            pcall(function()
+                if obj:IsA("ParticleEmitter") or obj:IsA("Beam") or obj:IsA("Trail") then
+                    obj.Color = ColorSequence.new(tint)
+                elseif obj:IsA("Smoke") then
+                    obj.Color = tint
+                elseif obj:IsA("Fire") then
+                    obj.Color = tint
+                    obj.SecondaryColor = tint:Lerp(Color3.new(1, 1, 1), 0.25)
+                elseif obj:IsA("BasePart") then
+                    obj.Color = tint
+                elseif obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+                    obj.ImageColor3 = tint
+                end
+            end)
+        end
+        paint(root)
+        for _, obj in ipairs(root:GetDescendants()) do paint(obj) end
+    end
 
     local function lower(value)
         return string.lower(tostring(value or ""))
@@ -4676,6 +6996,8 @@ end)()
                 pcall(function() obj:Destroy() end)
             end
         end
+        -- Tint only the local clones, never ReplicatedStorage's original assets.
+        recolourBlackFlashClone(clone)
 
         if clone:IsA("Sound") then
             local soundAttachment = makeBlackFlashAttachment(anchor, impactCFrame)
@@ -5163,6 +7485,18 @@ end)()
     end)
     blackFlashCycle = blackFlashMod.cycle("FX Source", blackFlashNames, 1, function(i)
         blackFlashSelectedIndex = i
+    end)
+    blackFlashMod.cycle("FX Colour", {"Original", "Crimson", "Electric Blue", "Violet", "Gold", "Lime", "Custom RGB"}, 1, function(i)
+        blackFlashColourMode = i
+    end)
+    blackFlashMod.slider("Custom Red", 0, 255, blackFlashRGB[1], 1, function(v)
+        blackFlashRGB[1] = math.floor(v + 0.5)
+    end)
+    blackFlashMod.slider("Custom Green", 0, 255, blackFlashRGB[2], 1, function(v)
+        blackFlashRGB[2] = math.floor(v + 0.5)
+    end)
+    blackFlashMod.slider("Custom Blue", 0, 255, blackFlashRGB[3], 1, function(v)
+        blackFlashRGB[3] = math.floor(v + 0.5)
     end)
     blackFlashMod.slider("Trigger Chance (%)", 0, 100, blackFlashChance, 1, function(v) blackFlashChance = v end)
     blackFlashMod.slider("Sound Volume", 0, 2, blackFlashVolume, 0.1, function(v) blackFlashVolume = v end)
@@ -7319,10 +9653,32 @@ local sprintTapToken = 0
 -- Always attempt key-up, even if the press/wait path errors. Some executors
 -- can leave a synthetic key held if the release call is skipped or fails.
 local function tapSprintKey(keyName)
+    if type(keyName) ~= "string" or keyName == "" then return false end
     local keyInfo = sprintKeyData[keyName]
-    if not keyInfo then return false end
+    if not keyInfo then
+        local kc = Enum.KeyCode[keyName]
+        if not kc or kc == Enum.KeyCode.Unknown then return false end
+        local vk
+        if keyName:match("^[A-Z]$") or keyName:match("^[0-9]$") then
+            vk = string.byte(keyName)
+        elseif keyName:match("^F%d+$") then
+            local n = tonumber(keyName:match("%d+"))
+            if n and n >= 1 and n <= 12 then vk = 0x6F + n end
+        else
+            local special = {
+                Space = 0x20, Tab = 0x09, Return = 0x0D,
+                LeftControl = 0x11, RightControl = 0x11,
+                LeftShift = 0x10, RightShift = 0x10,
+                LeftAlt = 0x12, RightAlt = 0x12,
+                Up = 0x26, Down = 0x28, Left = 0x25, Right = 0x27,
+                Backspace = 0x08,
+            }
+            vk = special[keyName]
+        end
+        keyInfo = {keyCode = kc, virtualKey = vk}
+    end
 
-    if type(keypress) == "function" and type(keyrelease) == "function" then
+    if keyInfo.virtualKey and type(keypress) == "function" and type(keyrelease) == "function" then
         local downOk = pcall(keypress, keyInfo.virtualKey)
         if downOk then
             task.wait(0.045)
@@ -7467,15 +9823,8 @@ local autoSprintMod = addModule(clientPanel, "Auto Sprint", function(on)
         end
     end)
 end)
-autoSprintMod.cycle("Run Key", sprintKeyOptions, sprintKeyIndex, function(index)
-    if sprintKeyOptions[index] then
-        sprintKeyIndex = index
-        sprintKeyName = sprintKeyOptions[index]
-        if sprintConn then
-            autoSprintMod.set(false)
-            autoSprintMod.set(true)
-        end
-    end
+autoSprintMod.keySetting("Run Key", Enum.KeyCode.LeftControl, function(key)
+    sprintKeyName = key and key.Name or ""
 end)
 
 -- Freelook + spec-tool hotbar quick use. Kept in a separate scope to protect
@@ -7758,167 +10107,467 @@ end)
     -- Spec Tool Quick Use: select an actual number-key hotbar slot, activate
     -- the tool once, then restore the prior tool or leave hands empty.
     ------------------------------------------------------------------
-    local quickUseKeyOptions = {"F6", "G", "H", "J", "K", "L", "U", "I"}
-    local quickUseKeyCodes = {
-        F6 = Enum.KeyCode.F6, G = Enum.KeyCode.G, H = Enum.KeyCode.H,
-        J = Enum.KeyCode.J, K = Enum.KeyCode.K, L = Enum.KeyCode.L,
-        U = Enum.KeyCode.U, I = Enum.KeyCode.I,
+    -- Single-input spec helper evolved into a short programmable move sequence.
+    -- Events are sent after equip acknowledgement, instead of activating the
+    -- tool and waiting fixed 0.1 - 0.4 second gaps.
+    local slotNumbers = {"1", "2", "3", "4", "5", "6", "7", "8", "9"}
+    local hotbarCodes = {
+        Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three,
+        Enum.KeyCode.Four, Enum.KeyCode.Five, Enum.KeyCode.Six,
+        Enum.KeyCode.Seven, Enum.KeyCode.Eight, Enum.KeyCode.Nine,
     }
-    local quickUseModeOptions = {"Hotbar Slot", "Auto-detect Spec Tool"}
-    local quickUseSlotOptions = {"1", "2", "3", "4", "5", "6", "7", "8", "9"}
-    local quickUseSlotKeys = {
-        [1] = {keyCode = Enum.KeyCode.One, virtualKey = 0x31},
-        [2] = {keyCode = Enum.KeyCode.Two, virtualKey = 0x32},
-        [3] = {keyCode = Enum.KeyCode.Three, virtualKey = 0x33},
-        [4] = {keyCode = Enum.KeyCode.Four, virtualKey = 0x34},
-        [5] = {keyCode = Enum.KeyCode.Five, virtualKey = 0x35},
-        [6] = {keyCode = Enum.KeyCode.Six, virtualKey = 0x36},
-        [7] = {keyCode = Enum.KeyCode.Seven, virtualKey = 0x37},
-        [8] = {keyCode = Enum.KeyCode.Eight, virtualKey = 0x38},
-        [9] = {keyCode = Enum.KeyCode.Nine, virtualKey = 0x39},
-    }
-    local quickUseKey = Enum.KeyCode.F6
-    local quickUseMode = 1
-    local quickUseSlot = 1
-    local quickUseDuration = 0.16
-    local quickUseBusy = false
-    local quickUseMod
+    local specToolMode = 2 -- Auto detect; hotbar-slot fallback remains available.
+    local specSlot = 1
+    local specSteps = {{key = Enum.KeyCode.Z, gap = 0}}
+    -- The fast path starts the actual equip on InputBegan; don't impose
+    -- a second fixed wait after Roblox has acknowledged the equip.
+    local equipSettle = 0
+    local restoreDelay = 0.05
+    local pressDuration = 0.03
+    local specBusy = false
+    local specEpoch = 0
+    local specMod
+    local specEditor, specStatus
+    local refreshSpecEditor
+    local maxSpecMoves = 8
+    local stepGaps = {0, 0.02, 0.04, 0.06, 0.08, 0.12, 0.18, 0.25}
+    -- Cache the last boxing glove Tool; avoid rescanning Backpack every time
+    -- the user taps a spec key. Revalidate parent each time because character
+    -- respawns and YBA may recreate Tools.
+    local cachedGloveTool
 
-    local function toolLooksLikeSpec(tool)
-        local name = string.lower(tostring(tool and tool.Name or ""))
-        for _, token in ipairs({"spec", "special", "hamon", "boxing", "spin", "pluck", "vamp", "sword", "cyborg"}) do
-            if string.find(name, token, 1, true) then return true end
+    local function specToolCandidate(tool)
+        if not tool or not tool:IsA("Tool") then return false end
+        local name = string.lower(tool.Name)
+        for _, word in ipairs({"spec", "special", "boxing", "glove", "hamon", "spin", "pluck", "vamp", "sword", "cyborg"}) do
+            if string.find(name, word, 1, true) then return true end
         end
-        local ok, flag = pcall(function()
+        local ok, attribute = pcall(function()
             return tool:GetAttribute("IsSpec") or tool:GetAttribute("SpecTool")
         end)
-        return ok and flag == true
+        return ok and attribute == true
     end
 
-    local function findAutoSpecTool()
-        local character = player.Character
+    local function findSpecTool(character)
         local backpack = player:FindFirstChildOfClass("Backpack")
-        if character then
-            for _, item in ipairs(character:GetChildren()) do
-                if item:IsA("Tool") and toolLooksLikeSpec(item) then return item end
-            end
+        if cachedGloveTool
+            and (cachedGloveTool.Parent == character or cachedGloveTool.Parent == backpack)
+            and specToolCandidate(cachedGloveTool) then
+            return cachedGloveTool
         end
-        if backpack then
-            for _, item in ipairs(backpack:GetChildren()) do
-                if item:IsA("Tool") and toolLooksLikeSpec(item) then return item end
-            end
-        end
-        return nil
-    end
-
-    local function tapHotbarSlot(slotIndex)
-        local keyInfo = quickUseSlotKeys[slotIndex]
-        if not keyInfo then return false end
-        if type(keypress) == "function" and type(keyrelease) == "function" then
-            local downOK = pcall(keypress, keyInfo.virtualKey)
-            if downOK then
-                task.wait(0.045)
-                local upOK = pcall(keyrelease, keyInfo.virtualKey)
-                if not upOK then
-                    task.wait()
-                    upOK = pcall(keyrelease, keyInfo.virtualKey)
-                end
-                if upOK then return true end
-            end
-        end
-        local serviceOK, virtualInput = pcall(function() return game:GetService("VirtualInputManager") end)
-        if not serviceOK or not virtualInput then return false end
-        local downOK = pcall(function() virtualInput:SendKeyEvent(true, keyInfo.keyCode, false, game) end)
-        task.wait(0.045)
-        local upOK = pcall(function() virtualInput:SendKeyEvent(false, keyInfo.keyCode, false, game) end)
-        if not upOK then
-            task.wait()
-            pcall(function() virtualInput:SendKeyEvent(false, keyInfo.keyCode, false, game) end)
-        end
-        return downOK and upOK
-    end
-
-    local function quickUseTool()
-        if quickUseBusy or not quickUseMod or not quickUseMod.enabled then return end
-        quickUseBusy = true
-        task.spawn(function()
-            local character = player.Character
-            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-            local previousTool = character and character:FindFirstChildOfClass("Tool")
-            local activatedTool = nil
-            local ok, err = pcall(function()
-                if not character or not humanoid or humanoid.Health <= 0 then
-                    error("character isn't ready")
-                end
-                local tool
-                if quickUseMode == 1 then
-                    local sent = tapHotbarSlot(quickUseSlot)
-                    if not sent then error("Potassium didn't expose hotbar key input for slot " .. tostring(quickUseSlot)) end
-                    task.wait(0.12)
-                    if player.Character ~= character then error("character changed while selecting slot") end
-                    tool = character:FindFirstChildOfClass("Tool")
-                    if not tool then error("hotbar slot " .. tostring(quickUseSlot) .. " didn't equip a Tool") end
-                else
-                    tool = findAutoSpecTool()
-                    if not tool then error("no spec Tool found in character or Backpack") end
-                    local backpack = player:FindFirstChildOfClass("Backpack")
-                    if tool.Parent == backpack then
-                        humanoid:EquipTool(tool)
-                        task.wait(0.1)
+        cachedGloveTool = nil
+        local best, bestScore
+        for _, container in ipairs({character, backpack}) do
+            if container then
+                for _, child in ipairs(container:GetChildren()) do
+                    if specToolCandidate(child) then
+                        local name = string.lower(child.Name)
+                        local score = 1
+                        -- Prefer the boxing gloves when the inventory includes
+                        -- other spec-like items (e.g. swords or scrolls).
+                        if name:find("glove", 1, true) or name:find("boxing", 1, true) then
+                            score = 100
+                        elseif name:find("spec", 1, true) then
+                            score = 80
+                        elseif child.Parent == character then
+                            score = 60
+                        end
+                        if not best or score > bestScore then best, bestScore = child, score end
                     end
-                    tool = character:FindFirstChildOfClass("Tool")
-                    if not tool then error("spec Tool did not equip") end
                 end
-                if tool.Parent ~= character then error("selected Tool isn't equipped") end
-                activatedTool = tool
-                local activated, activationError = pcall(function() tool:Activate() end)
-                if not activated then error("Tool activation failed: " .. tostring(activationError)) end
-                hint.Text = "Spec Quick Use: " .. tostring(tool.Name)
-                task.wait(quickUseDuration)
-            end)
+            end
+        end
+        if best then
+            local name = string.lower(best.Name)
+            if name:find("glove", 1, true) or name:find("boxing", 1, true) then
+                cachedGloveTool = best
+            end
+        end
+        return best
+    end
 
-            -- Always return the tool state, including when the tool disappears,
-            -- the user disables the module, or an executor-specific call fails.
-            pcall(function()
-                if activatedTool and activatedTool.Parent == character then
-                    activatedTool:Deactivate()
+    local virtualManager
+    local attemptedInputManager = false
+    local function vkFor(code)
+        if not code then return nil end
+        local name = code.Name
+        if #name == 1 then
+            return string.byte(string.upper(name))
+        end
+        local digits = {Zero = 0, One = 1, Two = 2, Three = 3, Four = 4,
+            Five = 5, Six = 6, Seven = 7, Eight = 8, Nine = 9}
+        if digits[name] then return 0x30 + digits[name] end
+        local f = string.match(name, "^F(%d+)$")
+        if f and tonumber(f) <= 12 then return 0x6F + tonumber(f) end
+        return ({Space = 0x20, LeftShift = 0xA0, RightShift = 0xA1,
+            LeftControl = 0xA2, RightControl = 0xA3, Tab = 0x09})[name]
+    end
+
+    local function sendSpecKey(code, down)
+        if not code then return false end
+        if not attemptedInputManager then
+            attemptedInputManager = true
+            local ok, result = pcall(function() return game:GetService("VirtualInputManager") end)
+            if ok then virtualManager = result end
+        end
+        if virtualManager then
+            local ok = pcall(function() virtualManager:SendKeyEvent(down, code, false, game) end)
+            if ok then return true end
+        end
+        local vk = vkFor(code)
+        local fn = down and keypress or keyrelease
+        if vk and type(fn) == "function" then
+            return pcall(fn, vk)
+        end
+        return false
+    end
+
+    local function tapSpecKey(code)
+        if not sendSpecKey(code, true) then return false end
+        -- Always release even if the move is cancelled; never leave a key held.
+        task.wait(pressDuration)
+        local released = sendSpecKey(code, false)
+        if not released then task.defer(function() sendSpecKey(code, false) end) end
+        return released
+    end
+
+    local function isEquipped(tool, character)
+        return tool and tool.Parent == character
+    end
+
+    local function equipSpec(character, humanoid, preselected, equipWasRequested)
+        if specToolMode == 2 then
+            local tool = preselected or findSpecTool(character)
+            if not tool then return nil, "No spec tool found (try Hotbar Slot mode)" end
+            -- Normally EquipTool was already called synchronously in the input
+            -- callback. Only issue it here as a fallback for failed/late prep.
+            if tool.Parent ~= character and not equipWasRequested then
+                local ok = pcall(function() humanoid:EquipTool(tool) end)
+                if not ok then return nil, "Could not equip spec tool" end
+            end
+            local deadline = os.clock() + 0.40
+            while not isEquipped(tool, character) and os.clock() < deadline do task.wait() end
+            if not isEquipped(tool, character) then return nil, "Spec tool did not equip" end
+            return tool
+        end
+        if not tapSpecKey(hotbarCodes[specSlot]) then
+            return nil, "This executor does not support simulated hotbar input"
+        end
+        local deadline = os.clock() + 0.40
+        while os.clock() < deadline do
+            local candidate = character:FindFirstChildOfClass("Tool")
+            if candidate then return candidate end
+            task.wait()
+        end
+        return nil, "No tool appeared in the selected hotbar slot"
+    end
+
+    -- Each configured move key triggers the equip immediately. No Use Key/F6.
+    -- The critical change from v43: call Humanoid:EquipTool during InputBegan,
+    -- instead of waiting for a spawned coroutine to run on a later frame.
+    -- The coroutine only waits if Roblox has not acknowledged the equip yet.
+    local function runSpecMove(moveIndex)
+        if specBusy or not specMod or not specMod.enabled then return end
+        local move = specSteps[moveIndex]
+        if not move or not move.key then return end
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not character or not humanoid or humanoid.Health <= 0 then return end
+        local equipped = character:FindFirstChildOfClass("Tool")
+        if equipped and specToolMode == 2 and specToolCandidate(equipped) then
+            -- The original keypress is handled natively by the game.
+            return
+        end
+        specBusy = true
+        specEpoch += 1
+        local token = specEpoch
+        local moveKey, moveWait = move.key, move.gap
+        local previous = equipped
+        local prepared, requestedEquip = nil, false
+        if specToolMode == 2 then
+            prepared = findSpecTool(character)
+            if prepared and prepared.Parent ~= character then
+                -- Synchronous equip: get the gloves out on the SAME input event.
+                requestedEquip = pcall(function() humanoid:EquipTool(prepared) end)
+            end
+        end
+        task.defer(function()
+            local selected
+            local ok, err = pcall(function()
+                if player.Character ~= character or humanoid.Health <= 0
+                    or token ~= specEpoch or not specMod.enabled then return end
+                local reason
+                selected, reason = equipSpec(character, humanoid, prepared, requestedEquip)
+                if not selected then error(reason) end
+                if previous == selected then return end
+                -- If this callback itself equipped the gloves, allow one
+                -- Heartbeat for the game's Tool.Equipped listeners to connect.
+                -- This is substantially shorter than v43's fixed delay and
+                -- avoids firing a move before a freshly-equipped spec is ready.
+                if requestedEquip then RunService.Heartbeat:Wait() end
+                -- Additional waits are optional and explicitly configured.
+                local waitBefore = equipSettle + (tonumber(moveWait) or 0)
+                if waitBefore > 0 then task.wait(waitBefore) end
+                if specEpoch ~= token or not specMod.enabled or player.Character ~= character
+                    or selected.Parent ~= character then return end
+                if not tapSpecKey(moveKey) then
+                    error("Input unavailable: " .. moveKey.Name)
                 end
+                if restoreDelay > 0 then task.wait(restoreDelay) end
             end)
-            if character and player.Character == character and humanoid and humanoid.Parent then
+            if humanoid and humanoid.Parent and player.Character == character then
                 pcall(function()
-                    if previousTool and previousTool ~= activatedTool and previousTool.Parent then
-                        humanoid:EquipTool(previousTool)
-                    else
+                    if previous and previous ~= selected and previous.Parent then
+                        humanoid:EquipTool(previous)
+                    elseif not previous and selected and selected.Parent == character then
                         humanoid:UnequipTools()
                     end
                 end)
             end
             if not ok then
-                warn("[TrueSight] Spec Tool Quick Use: " .. tostring(err))
+                warn("[TrueSight] Spec Quick Use: " .. tostring(err))
+                if specStatus and specStatus.Parent then specStatus.Text = tostring(err) end
                 if notifyConfig then notifyConfig("Spec Quick Use: " .. tostring(err), true) end
+            elseif specStatus and specStatus.Parent then
+                specStatus.Text = "Used " .. moveKey.Name .. " · ready"
             end
-            quickUseBusy = false
+            specBusy = false
         end)
     end
 
-    quickUseMod = addModule(clientPanel, "Spec Tool Quick Use", function() end)
-    quickUseMod.cycle("Use Key", quickUseKeyOptions, 1, function(index)
-        quickUseKey = quickUseKeyCodes[quickUseKeyOptions[index]] or Enum.KeyCode.F6
+    specMod = addModule(clientPanel, "Spec Tool Quick Use", function(on)
+        if not on then specEpoch += 1 end
     end)
-    quickUseMod.cycle("Tool Mode", quickUseModeOptions, 1, function(index)
-        quickUseMode = index
+    local slotWidget
+    specMod.cycle("Tool Mode", {"Hotbar Slot", "Auto Detect"}, 2, function(i)
+        specToolMode = i
+        if slotWidget then slotWidget.button.Visible = (i == 1) end
     end)
-    quickUseMod.cycle("Hotbar Slot", quickUseSlotOptions, 1, function(index)
-        quickUseSlot = index
+    slotWidget = specMod.cycle("Hotbar Slot", slotNumbers, 1, function(i) specSlot = i end)
+    slotWidget.button.Visible = false -- Only useful in Hotbar Slot mode.
+
+    local settings = specMod.holder:FindFirstChildWhichIsA("Frame")
+    -- Use the registered setting widget's parent, not an assumed panel layout.
+    for _, item in ipairs(specMod.holder:GetChildren()) do
+        if item:IsA("Frame") and item:GetAttribute("TrueSightRole") == "sub" then
+            settings = item
+            break
+        end
+    end
+    specEditor = Instance.new("Frame")
+    specEditor.Name = "SpecMoveEditor"
+    specEditor.Size = UDim2.new(1, 0, 0, 0)
+    specEditor.AutomaticSize = Enum.AutomaticSize.Y
+    specEditor.BackgroundTransparency = 1
+    specEditor.LayoutOrder = 300
+    specEditor.Parent = settings
+    local editorList = vlist(specEditor)
+    editorList.Padding = UDim.new(0, 5)
+
+    local moveHelp = Instance.new("TextLabel")
+    moveHelp.LayoutOrder = 299
+    moveHelp.Size = UDim2.new(1, 0, 0, 26)
+    moveHelp.BackgroundTransparency = 1
+    moveHelp.Font = FONT
+    moveHelp.TextSize = 10
+    moveHelp.TextColor3 = DIM
+    moveHelp.TextWrapped = true
+    moveHelp.TextXAlignment = Enum.TextXAlignment.Left
+    moveHelp.Text = "MOVE KEYS  ·  press a bound key to auto-equip and cast"
+    moveHelp.Parent = settings
+
+    local function specEditorButton(parent, caption, size, callback)
+        local button = Instance.new("TextButton")
+        button.Size = size
+        styleButton(button)
+        button.TextSize = 11
+        button.TextTruncate = Enum.TextTruncate.AtEnd
+        button.Text = caption
+        button.Parent = parent
+        button.MouseButton1Click:Connect(callback)
+        return button
+    end
+
+    refreshSpecEditor = function()
+        if not specEditor or not specEditor.Parent then return end
+        for _, row in ipairs(specEditor:GetChildren()) do
+            if row:IsA("Frame") then row:Destroy() end
+        end
+        for i, step in ipairs(specSteps) do
+            local index = i
+            local line = Instance.new("Frame")
+            line.Name = "Step" .. i
+            line.Size = UDim2.new(1, 0, 0, 34)
+            line.BackgroundColor3 = ROW
+            line.BorderSizePixel = 0
+            corner(line, 6)
+            line.LayoutOrder = i
+            line.Parent = specEditor
+            local function position(button, x, width)
+                button.Position = UDim2.new(x, 0, 0, 0)
+                button.Size = UDim2.new(width, -3, 1, 0)
+            end
+            local keyButton
+            keyButton = specEditorButton(line,
+                i .. "  ·  " .. (step.key and step.key.Name or "Set key"), UDim2.new(0.36, -3, 1, 0), function()
+                    keyUiState.capture = {
+                        label = "Spec Move " .. index,
+                        callback = function(newKey)
+                            if newKey then
+                                for j, existing in ipairs(specSteps) do
+                                    if j ~= index and existing.key == newKey then
+                                        if specStatus then specStatus.Text = newKey.Name .. " is already assigned" end
+                                        refreshSpecEditor()
+                                        return
+                                    end
+                                end
+                            end
+                            if specSteps[index] then specSteps[index].key = newKey end
+                            refreshSpecEditor(); requestSave()
+                        end,
+                        refresh = function() refreshSpecEditor() end,
+                    }
+                    keyButton.Text = "Press key..."
+                end)
+            position(keyButton, 0, 0.36)
+            local gapButton = specEditorButton(line,
+                "+" .. string.format("%.2fs", step.gap), UDim2.new(0.28, -3, 1, 0), function()
+                    if not specSteps[index] then return end
+                    local nextIndex = 1
+                    for j, gap in ipairs(stepGaps) do
+                        if math.abs(gap - specSteps[index].gap) < 0.001 then
+                            nextIndex = (j % #stepGaps) + 1
+                            break
+                        end
+                    end
+                    specSteps[index].gap = stepGaps[nextIndex]
+                    refreshSpecEditor(); requestSave()
+                end)
+            position(gapButton, 0.36, 0.28)
+            local up = specEditorButton(line, "↑", UDim2.new(0.12, -3, 1, 0), function()
+                if index > 1 then
+                    specSteps[index], specSteps[index - 1] = specSteps[index - 1], specSteps[index]
+                    refreshSpecEditor(); requestSave()
+                end
+            end)
+            position(up, 0.64, 0.12)
+            local down = specEditorButton(line, "↓", UDim2.new(0.12, -3, 1, 0), function()
+                if index < #specSteps then
+                    specSteps[index], specSteps[index + 1] = specSteps[index + 1], specSteps[index]
+                    refreshSpecEditor(); requestSave()
+                end
+            end)
+            position(down, 0.76, 0.12)
+            local remove = specEditorButton(line, "×", UDim2.new(0.12, -3, 1, 0), function()
+                if #specSteps > 1 then
+                    table.remove(specSteps, index)
+                    refreshSpecEditor(); requestSave()
+                end
+            end)
+            position(remove, 0.88, 0.12)
+        end
+    end
+
+    registerConfig("Spec Tool Quick Use/Move Sequence", function()
+        local result = {}
+        for _, step in ipairs(specSteps) do
+            result[#result + 1] = {key = step.key and step.key.Name or "", gap = step.gap}
+        end
+        return result
+    end, function(saved)
+        if type(saved) ~= "table" then return end
+        local parsed = {}
+        local usedKeys = {}
+        for _, entry in ipairs(saved) do
+            if #parsed >= maxSpecMoves then break end
+            if type(entry) == "table" and type(entry.key) == "string" then
+                local ok, code = pcall(function() return Enum.KeyCode[entry.key] end)
+                if ok and code and code ~= Enum.KeyCode.Unknown and not usedKeys[code] then
+                    usedKeys[code] = true
+                    parsed[#parsed + 1] = {key = code, gap = math.clamp(tonumber(entry.gap) or 0, 0, 0.25)}
+                end
+            end
+        end
+        if #parsed > 0 then specSteps = parsed; refreshSpecEditor() end
     end)
-    quickUseMod.slider("Use Duration", 0.08, 0.40, 0.16, 0.02, function(value)
-        quickUseDuration = value
+
+    local addSpecMove = addAction({frame = settings, panel = settings}, "+ Add Move", function()
+        if #specSteps >= maxSpecMoves then
+            if specStatus then specStatus.Text = "Maximum 8 moves." end
+            return
+        end
+        local preferred = {Enum.KeyCode.X, Enum.KeyCode.C, Enum.KeyCode.V,
+            Enum.KeyCode.B, Enum.KeyCode.N, Enum.KeyCode.T, Enum.KeyCode.R,
+            Enum.KeyCode.Q, Enum.KeyCode.Z}
+        local used = {}
+        for _, move in ipairs(specSteps) do used[move.key] = true end
+        local nextKey = nil
+        for _, key in ipairs(preferred) do
+            if not used[key] then nextKey = key; break end
+        end
+        specSteps[#specSteps + 1] = {key = nextKey, gap = 0}
+        refreshSpecEditor(); requestSave()
     end)
+    if addSpecMove then
+        addSpecMove.LayoutOrder = 301
+        addSpecMove.Size = UDim2.new(1, 0, 0, 32)
+        addSpecMove.Text = "   + Add Move"
+    end
+
+    local advanced = Instance.new("Frame")
+    advanced.Name = "SpecAdvancedTimings"
+    advanced.LayoutOrder = 303
+    advanced.Size = UDim2.new(1, 0, 0, 0)
+    advanced.AutomaticSize = Enum.AutomaticSize.Y
+    advanced.BackgroundTransparency = 1
+    advanced.Visible = false
+    advanced.Parent = settings
+    local advancedLayout = vlist(advanced)
+    advancedLayout.Padding = UDim.new(0, 6)
+    local equipSlider = addSlider(advanced, "Extra Equip Wait", 0, 0.20, equipSettle, 0.005,
+        function(v) equipSettle = v end, "Spec Tool Quick Use/Equip Settle")
+    equipSlider.LayoutOrder = 1
+    local holdSlider = addSlider(advanced, "Key Hold", 0.02, 0.10, pressDuration, 0.005,
+        function(v) pressDuration = v end, "Spec Tool Quick Use/Key Hold")
+    holdSlider.LayoutOrder = 2
+    local restoreSlider = addSlider(advanced, "Restore Wait", 0, 0.30, restoreDelay, 0.01,
+        function(v) restoreDelay = v end, "Spec Tool Quick Use/Restore Delay")
+    restoreSlider.LayoutOrder = 3
+    local advancedToggle = Instance.new("TextButton")
+    advancedToggle.Name = "SpecAdvancedToggle"
+    advancedToggle.LayoutOrder = 302
+    advancedToggle.Size = UDim2.new(1, 0, 0, 29)
+    styleButton(advancedToggle)
+    advancedToggle.TextSize = 11
+    advancedToggle.Text = "   Advanced Timings   +"
+    advancedToggle.Parent = settings
+    advancedToggle.MouseButton1Click:Connect(function()
+        advanced.Visible = not advanced.Visible
+        advancedToggle.Text = advanced.Visible and "   Advanced Timings   −" or "   Advanced Timings   +"
+    end)
+    specStatus = Instance.new("TextLabel")
+    specStatus.Size = UDim2.new(1, 0, 0, 33)
+    specStatus.TextWrapped = true
+    specStatus.Text = "Press a move key to equip immediately; add a small gap only if needed."
+    specStatus.TextSize = 10
+    specStatus.TextColor3 = DIM
+    specStatus.BackgroundTransparency = 1
+    specStatus.LayoutOrder = 304
+    specStatus.Parent = settings
+    refreshSpecEditor()
+
     table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
-        if processed or not quickUseMod.enabled or clickGui.Visible then return end
-        if UserInputService:GetFocusedTextBox() then return end
-        if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == quickUseKey then
-            quickUseTool()
+        if not specMod.enabled or clickGui.Visible or keyUiState.capture then return end
+        if keyUiState.binding or keyUiState.bindingModule or UserInputService:GetFocusedTextBox() then return end
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        if input.KeyCode == keyUiState.menuKey then return end
+        local wheel = gui:FindFirstChild("TrueSightEmoteWheel")
+        if wheel and wheel.Visible then return end
+        for i, step in ipairs(specSteps) do
+            if step.key and input.KeyCode == step.key then
+                runSpecMove(i)
+                return
+            end
         end
     end))
 end)()
@@ -7991,6 +10640,18 @@ end)()
 -- Input handling
 ------------------------------------------------------------------
 table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
+    if keyUiState.capture then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            local capture = keyUiState.capture
+            keyUiState.capture = nil
+            if input.KeyCode == Enum.KeyCode.Escape then
+                capture.refresh()
+            else
+                capture.callback(input.KeyCode == Enum.KeyCode.Backspace and nil or input.KeyCode)
+            end
+        end
+        return
+    end
     if keyUiState.bindingModule then
         if input.UserInputType == Enum.UserInputType.Keyboard then
             if input.KeyCode ~= Enum.KeyCode.Escape then
@@ -8025,9 +10686,14 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(input, pr
     if processed then return end
     if input.KeyCode == keyUiState.menuKey then
         clickGui.Visible = not clickGui.Visible
+        if clickGui.Visible then
+            local emote = gui:FindFirstChild("TrueSightEmoteWheel")
+            if emote then emote.Visible = false end
+        end
         if uiInteraction then uiInteraction.closeDropdown() end
         return
     end
+    if clickGui.Visible then return end
     for _, m in ipairs(modules) do
         if m.keybind and input.KeyCode == m.keybind then
             m.set(not m.enabled)
@@ -8159,6 +10825,10 @@ modules._unloadCleanup = function()
     if visualModules.removeOrbs then pcall(visualModules.removeOrbs) end
     if visualModules.stopFootstepSparks then pcall(visualModules.stopFootstepSparks) end
     if visualModules.removeBodyGlow then pcall(visualModules.removeBodyGlow) end
+    if visualModules.clearShowcaseChams then pcall(visualModules.clearShowcaseChams) end
+    if modules._cleanupEmoteWheel then pcall(modules._cleanupEmoteWheel) end
+    if modules._cleanupMoid then pcall(modules._cleanupMoid) end
+    if modules._cleanupStandSkin then pcall(modules._cleanupStandSkin) end
     if visualModules.stopBlackFlash then pcall(visualModules.stopBlackFlash) end
     if nameTagLoop then nameTagLoop:Disconnect() nameTagLoop = nil end
     for plr in pairs(nameTagObjects) do removeNameTag(plr) end
@@ -8496,6 +11166,13 @@ local function applyConfig(data)
         if type(data.values) == "table" then
             for key, value in pairs(data.values) do
                 local entry = configEntries[key]
+                if not entry and type(key) == "string" then
+                    -- Keep v26-v41 settings when the stand-skin label loses Experimental.
+                    local previousPrefix = "Avatar Stand Skin (Experimental)/"
+                    if string.sub(key, 1, #previousPrefix) == previousPrefix then
+                        entry = configEntries["Avatar Stand Skin/" .. string.sub(key, #previousPrefix + 1)]
+                    end
+                end
                 if entry then
                     local setOk, setErr = pcall(entry.set, value)
                     if not setOk then
@@ -8555,6 +11232,9 @@ local function applyConfig(data)
         if type(data.modules) == "table" then
             for _, module in ipairs(modules) do
                 local want = data.modules[module.name]
+                if want == nil and module.name == "Avatar Stand Skin" then
+                    want = data.modules["Avatar Stand Skin (Experimental)"]
+                end
                 if want == nil and module.name == "Desync Box" then
                     want = data.modules["Own Position Estimate"]
                     if want == nil then want = data.modules["Desync Tracker"] end
@@ -9839,8 +12519,8 @@ navFooter.TextColor3 = DIM
 navFooter.TextXAlignment = Enum.TextXAlignment.Left
 navFooter.Parent = navRail
 
-local navPageNames = {"Quick", "Visual", "Prediction", "Render", "World", "HUD", "Performance", "Keybinds", "Spawns", "Backgrounds", "Client", "Config"}
-local navIcons = {Quick = "★", Visual = "◈", Prediction = "⌖", Render = "◉", World = "◇", HUD = "▦", Performance = "◷", Keybinds = "⌨", Spawns = "⌖", Backgrounds = "▧", Client = "⚙", Config = "☷"}
+local navPageNames = {"Quick", "Visual", "Prediction", "Render", "World", "HUD", "Performance", "Keybinds", "Spawns", "Backgrounds", "Client", "Config", "MOID"}
+local navIcons = {Quick = "★", Visual = "◈", Prediction = "⌖", Render = "◉", World = "◇", HUD = "▦", Performance = "◷", Keybinds = "⌨", Spawns = "⌖", Backgrounds = "▧", Client = "⚙", Config = "☷", MOID = "☢"}
 local navButtons = {}
 local activeNavPage = "Quick"
 local navContentLeft = 192
@@ -9889,6 +12569,7 @@ local pageDescriptions = {
     Backgrounds = "Personalise the workspace artwork",
     Client = "Client tools and preferences",
     Config = "Save, restore and manage profiles",
+    MOID = "You were warned.",
 }
 local headerBorder = Instance.new("Frame")
 headerBorder.BorderSizePixel = 0
@@ -9946,6 +12627,7 @@ end
 pageSearch:GetPropertyChangedSignal("Text"):Connect(applyPageSearch)
 
 local backgroundsPanel = makePanel("Backgrounds", 0)
+local moidPanel = makePanel("MOID", 0)
 
 local function applyNavLayout()
     local camera = cam()
@@ -10050,7 +12732,284 @@ for i, title in ipairs(navPageNames) do
     onAccent(function(c) if marker.Parent then marker.BackgroundColor3 = c end end)
     button.MouseButton1Click:Connect(function() selectNavPage(title) end)
     navButtons[title] = button
+    if title == "MOID" then button.Visible = false end
 end
+
+-- Hidden MOID page: local-only image override with five explicit confirmations.
+-- Activation is deliberately never persisted to the config / auto-execute.
+;(function()
+    local DECAL = "rbxassetid://18697706946"
+    local faceImage = DECAL
+    local audioService = game:GetService("SoundService")
+    local moidEnabled, applying = false, false
+    local applyGeneration = 0
+    local originals = setmetatable({}, {__mode = "k"})
+    local streamed = {}
+    local currentSiren
+    local moidStatus = Instance.new("TextLabel")
+    moidStatus.Size = UDim2.new(1, -12, 0, 50)
+    moidStatus.BackgroundTransparency = 1
+    moidStatus.TextColor3 = DIM
+    moidStatus.Font = FONT
+    moidStatus.TextSize = 12
+    moidStatus.TextWrapped = true
+    moidStatus.TextXAlignment = Enum.TextXAlignment.Left
+    moidStatus.Text = "Hidden mode ready. This only changes what you see; it never edits the server."
+    moidStatus.Parent = moidPanel.frame
+    moidStatus.LayoutOrder = nextOrder(moidPanel)
+
+    local propsByClass = {
+        Decal = {"Texture"}, Texture = {"Texture"},
+        MeshPart = {"TextureID"}, SpecialMesh = {"TextureId"},
+        SurfaceAppearance = {"ColorMap"},
+        ParticleEmitter = {"Texture"}, Trail = {"Texture"}, Beam = {"Texture"},
+        Shirt = {"ShirtTemplate"}, Pants = {"PantsTemplate"},
+        ShirtGraphic = {"Graphic"},
+        Sky = {"SkyboxBk", "SkyboxDn", "SkyboxFt", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SunTextureId", "MoonTextureId"},
+    }
+    local function shouldSkip(obj)
+        local p = obj
+        while p and p ~= workspace and p ~= Lighting do
+            if string.find(p.Name, "^TrueSight") then return true end
+            p = p.Parent
+        end
+        return false
+    end
+    local function retexture(obj)
+        if not moidEnabled or not obj or not obj.Parent or shouldSkip(obj) then return end
+        local props = propsByClass[obj.ClassName]
+        if not props then return end
+        local original = originals[obj]
+        if not original then original = {}; originals[obj] = original end
+        for _, property in ipairs(props) do
+            if original[property] == nil then
+                local ok, old = pcall(function() return obj[property] end)
+                if ok and type(old) == "string" then
+                    original[property] = old
+                    pcall(function() obj[property] = faceImage end)
+                end
+            end
+        end
+    end
+    local function stopSiren()
+        if currentSiren then
+            pcall(function() currentSiren:Stop() end)
+            currentSiren:Destroy()
+            currentSiren = nil
+        end
+    end
+    local function disconnectStream()
+        for _, conn in ipairs(streamed) do pcall(function() conn:Disconnect() end) end
+        table.clear(streamed)
+    end
+    local function restoreMoid()
+        moidEnabled = false
+        applyGeneration += 1
+        disconnectStream()
+        stopSiren()
+        local count = 0
+        for obj, props in pairs(originals) do
+            if obj and obj.Parent then
+                for prop, value in pairs(props) do
+                    pcall(function()
+                        if obj[prop] == DECAL or obj[prop] == faceImage then obj[prop] = value end
+                    end)
+                end
+            end
+            originals[obj] = nil
+            count += 1
+            if count % 120 == 0 then task.wait() end
+        end
+        moidStatus.Text = "MOID disabled. Original game image properties restored where still present."
+    end
+    local function applyMoid()
+        if applying or moidEnabled then return end
+        moidEnabled = true
+        applyGeneration += 1
+        local generation = applyGeneration
+        moidStatus.Text = "Replacing local textures, decals and selected effects..."
+        disconnectStream()
+        for _, root in ipairs({workspace, Lighting}) do
+            table.insert(streamed, root.DescendantAdded:Connect(function(obj)
+                if moidEnabled then retexture(obj) end
+            end))
+        end
+        applying = true
+        task.spawn(function()
+            -- Decal catalog IDs may resolve to an underlying Image ID. Some
+            -- executors disallow GetObjects, so a protected fallback is used.
+            local resolved, assets = pcall(function() return game:GetObjects(DECAL) end)
+            if resolved and type(assets) == "table" then
+                local object = assets[1]
+                if object and object:IsA("Decal") and object.Texture ~= "" then
+                    faceImage = object.Texture
+                end
+                for _, item in ipairs(assets) do pcall(function() item:Destroy() end) end
+            end
+            if generation ~= applyGeneration or not moidEnabled then
+                applying = false
+                return
+            end
+            local count, visited = 0, 0
+            for _, root in ipairs({workspace, Lighting}) do
+                for _, obj in ipairs(root:GetDescendants()) do
+                    visited += 1
+                    if generation ~= applyGeneration or not moidEnabled then break end
+                    if propsByClass[obj.ClassName] then
+                        retexture(obj)
+                        count += 1
+                    end
+                    -- Yield by visited objects, avoiding one massive startup stall.
+                    if visited % 150 == 0 then task.wait() end
+                end
+                if generation ~= applyGeneration or not moidEnabled then break end
+            end
+            applying = false
+            if generation == applyGeneration and moidEnabled then
+                moidStatus.Text = "MOID active on " .. count .. " compatible image objects. Newly streamed textures are included."
+            end
+        end)
+    end
+
+    local modal = Instance.new("Frame")
+    modal.Name = "MoidFiveWarnings"
+    modal.AnchorPoint = Vector2.new(0.5, 0.5)
+    modal.Position = UDim2.fromScale(0.5, 0.5)
+    modal.Size = UDim2.fromOffset(390, 214)
+    modal.BackgroundColor3 = Color3.fromRGB(22, 10, 14)
+    modal.BorderSizePixel = 0
+    modal.ZIndex = 900
+    modal.Visible = false
+    modal.Parent = gui
+    corner(modal, 16)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(242, 63, 75)
+    stroke.Thickness = 2
+    stroke.Parent = modal
+    local modalTitle = Instance.new("TextLabel")
+    modalTitle.Size = UDim2.new(1, -22, 0, 42)
+    modalTitle.Position = UDim2.fromOffset(12, 12)
+    modalTitle.BackgroundTransparency = 1
+    modalTitle.Font = FONTB
+    modalTitle.TextColor3 = Color3.fromRGB(255, 129, 136)
+    modalTitle.TextSize = 18
+    modalTitle.Text = "MOID SYSTEM WARNING"
+    modalTitle.ZIndex = 901
+    modalTitle.Parent = modal
+    local modalMsg = Instance.new("TextLabel")
+    modalMsg.Size = UDim2.new(1, -32, 0, 93)
+    modalMsg.Position = UDim2.fromOffset(16, 56)
+    modalMsg.BackgroundTransparency = 1
+    modalMsg.Font = FONT
+    modalMsg.TextWrapped = true
+    modalMsg.TextColor3 = TEXT
+    modalMsg.TextSize = 13
+    modalMsg.ZIndex = 901
+    modalMsg.Parent = modal
+    local function modalButton(text, x, color)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.fromOffset(165, 40)
+        btn.Position = UDim2.new(x, x == 0 and 17 or -182, 1, -54)
+        btn.BackgroundColor3 = color
+        btn.BorderSizePixel = 0
+        btn.Text = text
+        btn.Font = FONTB
+        btn.TextColor3 = TEXT
+        btn.TextSize = 13
+        btn.ZIndex = 902
+        btn.Parent = modal
+        corner(btn, 9)
+        return btn
+    end
+    local cancel = modalButton("CANCEL", 0, Color3.fromRGB(49, 54, 65))
+    local accept = modalButton("ACCEPT", 1, Color3.fromRGB(137, 32, 44))
+    local stage = 0
+    local warnings = {
+        "Are you MOID?",
+        "Are you REALLY MOID?",
+        "Are you absolutely, positively, undeniably MOID?",
+        "Be serious now... are you the MOIDEST MOID to ever MOID?",
+        "FINAL QUESTION: ARE. YOU. MOID?!\n\nThis replaces local textures with Thukuna. You can restore them from the MOID tab.",
+    }
+    local function cancelMoid()
+        stage = 0
+        modal.Visible = false
+        stopSiren()
+    end
+    local function showWarning(index)
+        stage = index
+        modalTitle.Text = string.format("MOID CHECK  •  %d/5", index)
+        modalMsg.Text = warnings[index]
+        accept.Text = index == 5 and "I AM MOID" or "YES, I'M MOID"
+        modal.Visible = true
+    end
+    cancel.MouseButton1Click:Connect(cancelMoid)
+    accept.MouseButton1Click:Connect(function()
+        if stage < 1 or stage > 5 then return end
+        if stage < 5 then
+            showWarning(stage + 1)
+        else
+            cancelMoid()
+            applyMoid()
+        end
+    end)
+    local function beginMoidConfirmation()
+        if moidEnabled then
+            moidStatus.Text = "MOID already active. Choose Restore World to switch it off."
+            return
+        end
+        if modal.Visible then return end
+        stopSiren()
+        local siren = Instance.new("Sound")
+        siren.Name = "TrueSightMoidSiren"
+        siren.SoundId = "rbxassetid://116860113569334"
+        siren.Volume = 2.5
+        siren.Looped = true
+        siren.Parent = audioService
+        currentSiren = siren
+        pcall(function() siren:Play() end)
+        task.delay(12, function()
+            if currentSiren == siren then stopSiren() end
+        end)
+        showWarning(1)
+    end
+    -- Clicking the newly revealed sidebar entry itself also starts the warning chain.
+    navButtons.MOID.MouseButton1Click:Connect(beginMoidConfirmation)
+    addAction(moidPanel, "ACTIVATE MOID • Five Warnings", beginMoidConfirmation)
+    addAction(moidPanel, "RESTORE WORLD • Turn Off MOID", function()
+        if modal.Visible then cancelMoid() end
+        task.spawn(restoreMoid)
+    end)
+    modules._cleanupMoid = function()
+        modal.Visible = false
+        restoreMoid()
+    end
+
+    -- The Easter egg is unlocked only by M O I D with the menu open.
+    local sequence = {Enum.KeyCode.M, Enum.KeyCode.O, Enum.KeyCode.I, Enum.KeyCode.D}
+    local progress, lastKeyAt = 0, 0
+    table.insert(connections, UserInputService.InputBegan:Connect(function(input)
+        if modules._unloaded or not clickGui.Visible or navButtons.MOID.Visible then return end
+        if keyUiState.binding or keyUiState.bindingModule or keyUiState.capture then return end
+        if input.UserInputType ~= Enum.UserInputType.Keyboard or UserInputService:GetFocusedTextBox() then return end
+        if os.clock() - lastKeyAt > 2.3 then progress = 0 end
+        lastKeyAt = os.clock()
+        local expected = sequence[progress + 1]
+        progress = (input.KeyCode == expected) and progress + 1 or (input.KeyCode == sequence[1] and 1 or 0)
+        if progress == #sequence then
+            progress = 0
+            navButtons.MOID.Visible = true
+            task.defer(function()
+                if navList and navList.Parent then
+                    navList.CanvasPosition = Vector2.new(0, math.max(0,
+                        navLayout.AbsoluteContentSize.Y - navList.AbsoluteSize.Y))
+                end
+            end)
+            moidStatus.Text = "MOID unlocked. Activation requires five confirmations."
+            if notifyConfig then notifyConfig("Secret MOID tab unlocked", false) end
+        end
+    end))
+end)()
 
 onAccent(function(c)
     for title, button in pairs(navButtons) do
