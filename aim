@@ -1419,6 +1419,16 @@ local function buildGhostAvatar(character)
     clone.Name = "TrueSightDesyncChams"
     table.clear(ghostAvatar.parts)
 
+    -- Desync Chams are body-only. Remove hats, hair, and other avatar
+    -- accessories from the CLONE before creating its Highlight. If their
+    -- handles remain inside the Adornee model, Roblox highlights them too.
+    -- This never removes or changes accessories on the real character.
+    for _, item in ipairs(clone:GetDescendants()) do
+        if item:IsA("Accessory") then
+            item:Destroy()
+        end
+    end
+
     -- Pair parts by their hierarchy path instead of child-array index. Child
     -- ordering can differ in a character clone, which can make the ghost map
     -- the wrong source parts and appear stuck or malformed.
@@ -1441,7 +1451,10 @@ local function buildGhostAvatar(character)
     end
 
     for _, sourcePart in ipairs(character:GetDescendants()) do
-        if sourcePart:IsA("BasePart") then
+        -- Guard the source mapping too: excluded accessory handles must never
+        -- be re-added to the desync ghost's per-frame update list.
+        if sourcePart:IsA("BasePart")
+            and not sourcePart:FindFirstAncestorWhichIsA("Accessory") then
             local ghostPart = ghostByPath[relativePath(character, sourcePart)]
             if ghostPart and ghostPart:IsA("BasePart") then
                 mappedGhostParts[ghostPart] = true
