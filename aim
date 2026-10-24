@@ -1,4 +1,4 @@
--- TRUESIGHT v27 | client-side visual script
+-- TRUESIGHT v48 | client-side visual script
 -- UI/FX maintenance build: startup-only asset discovery, fixed freelook input, hotbar-slot spec quick-use, tidy module settings.
 -- Client-side visuals plus a small YBA Character Skill Tree helper.
 --
@@ -3628,6 +3628,8 @@ local function addModule(panel, name, onToggle)
     settings.BorderSizePixel = 0
     settings.Visible = false
     settings.Parent = holder
+    -- Allow related controls to live inside the module's existing expandable settings.
+    mod.settingsFrame = settings
     settings:SetAttribute("TrueSightRole", "sub")
     corner(settings, 6)
     local settingsPadding = Instance.new("UIPadding")
@@ -6259,16 +6261,23 @@ end)()
     -- Deliberately no extra sliders/cycles here. Fixed reliable choices:
     -- replacement only; complete R15 rig; accessories; compatible animations;
     -- auto-alignment to the live stand torso with no user-supplied offsets.
-    addTextInput(panel, "Stand Skin Username", "Roblox username (not display name)", player.Name, function(value)
+    -- The avatar controls and multiplayer skin-sync controls share ONE
+    -- expandable Avatar Stand Skin entry in the Visual menu.
+    local skinSettings = {frame = standSkinModule.settingsFrame, n = 0, panel = standSkinModule.panel}
+    visualModules.standSkinSettings = skinSettings
+    visualModules.standSkinModule = standSkinModule
+    local usernameField = addTextInput(skinSettings, "Stand Skin Username", "Roblox username (not display name)", player.Name, function(value)
         wantedUsername = value
         if standSkinModule.enabled then updateAvatarTemplate() end
     end, "Avatar Stand Skin/Username")
-    addAction(panel, "Stand Skin • Refresh Summoned Stand", function()
+    if usernameField then usernameField.LayoutOrder = 1 end
+    local refreshButton = addAction(skinSettings, "Refresh Stand Appearance", function()
         if not standSkinModule.enabled then status("Enable Avatar Stand Skin first."); return end
         lastRetryMorph, retryCount = nil, 0
         restoreSkin()
         refreshStand()
     end)
+    if refreshButton then refreshButton.LayoutOrder = 2 end
     -- Public avatar ID only; never expose avatar assets or the user's settings.
     modules._getSharedStandAvatar = function()
         if standSkinModule.enabled and builtAvatar and type(savedUserId) == "number" then
@@ -6286,7 +6295,7 @@ end)()
 end)()
 
 ------------------------------------------------------------------
--- TrueSight Skin Sync (v46, opt-in prototype)
+-- Truersight (v48, presence badges + existing Skin Sync dropdown UI)
 -- Uses the user's Cloudflare Worker / D1 relay. Never sends account secrets.
 -- The local Avatar Stand Skin logic above stays unchanged.
 ------------------------------------------------------------------
@@ -6296,7 +6305,7 @@ end)()
     local BASE_URL = "https://truesight-skin-sync.mckenziecox041.workers.dev"
     local MAX_REMOTE = 5
     local PUBLISH_SECONDS, POLL_SECONDS = 45, 20
-    local shareModule, showModule
+    local shareModule, showModule, presenceModule, starsModule
     local stopped = false
     local activeEntries = {}
     local advertised = nil
@@ -6305,7 +6314,7 @@ end)()
     local sessionJob = tostring(game.JobId or "")
 
     local function say(message, errorFlag)
-        if notifyConfig then notifyConfig("Skin Sync: " .. message, errorFlag == true) end
+        if notifyConfig then notifyConfig("Truersight: " .. message, errorFlag == true) end
     end
     local function validJob()
         return sessionJob:match("^[%da-fA-F%-]+$") and #sessionJob >= 32 and #sessionJob <= 64
@@ -6657,6 +6666,7 @@ end)()
             end
         end
         updateRemoteSkins()
+        if modules._truerSightSyncStars then modules._truerSightSyncStars() end
     end
     -- One shared render callback for remote skins; no separate frame loop
     -- per user and a hard cap on models and mirrored joints.
@@ -6785,20 +6795,300 @@ end)()
                 cleanupEntry(entry)
                 activeEntries[id] = nil
             end
+            if modules._truerSightSyncStars then modules._truerSightSyncStars() end
         end
     end)
-    addAction(panel, "Skin Sync • Check Connection", function()
+    -- Retain the original module names/configuration entries, but don't show
+    -- them as separate rows. Their visible controls are in Avatar Stand Skin.
+    shareModule.hidden = true
+    showModule.hidden = true
+    shareModule.hiddenInMenu = true
+    showModule.hiddenInMenu = true
+    shareModule.holder.Visible = false
+    showModule.holder.Visible = false
+    local skinSettings = visualModules.standSkinSettings
+    if skinSettings then
+        local header = Instance.new("TextLabel")
+        header.Name = "SkinSyncSection"
+        header.LayoutOrder = 3
+        header.Size = UDim2.new(1, 0, 0, 20)
+        header.BackgroundTransparency = 1
+        header.Font = FONTB
+        header.TextSize = 10
+        header.TextXAlignment = Enum.TextXAlignment.Left
+        header.TextColor3 = DIM
+        header.Text = "TRUERSIGHT  ★  MULTIPLAYER"
+        header.Parent = skinSettings.frame
+
+        local function addSkinSyncSwitch(mod, text, order)
+            local button = Instance.new("TextButton")
+            button.Name = "SkinSyncToggle"
+            button.LayoutOrder = order
+            button.Size = UDim2.new(1, 0, 0, 32)
+            styleButton(button)
+            button.TextSize = 11
+            button.TextXAlignment = Enum.TextXAlignment.Left
+            button.Parent = skinSettings.frame
+            local function update()
+                button.Text = "   " .. text .. "   [" .. (mod.enabled and "ON" or "OFF") .. "]"
+                button.TextColor3 = mod.enabled and accent or TEXT
+            end
+            local originalSet = mod.set
+            mod.set = function(enabled)
+                originalSet(enabled)
+                update()
+            end
+            button.MouseButton1Click:Connect(function() mod.set(not mod.enabled) end)
+            update()
+            return button
+        end
+        addSkinSyncSwitch(shareModule, "Share My Stand Skin", 4)
+        addSkinSyncSwitch(showModule, "Show Other Players' Skins", 5)
+    end
+    local checkButton = addAction(skinSettings or panel, "Check Truersight Connection", function()
         task.spawn(function()
             local result, err = httpCall("GET", "/health")
             if result and result.database == "connected" then
-                say("Relay online. Enable Share and Show to test with a friend.")
+                if result.presence == "ready" then
+                    say("Relay online. Truersight stars and shared skins ready.")
+                else
+                    say("Relay online. Update Worker for full Truersight presence stars.")
+                end
             else
                 say(err or "Relay unavailable", true)
             end
         end)
     end)
+    if skinSettings and checkButton then checkButton.LayoutOrder = 9 end
+
+    ------------------------------------------------------------------
+    -- TRUERSIGHT presence: opt-in publish, poll and static star nametags.
+    -- Designed to NOT add any per-frame updates or character meshes.
+    -- This block deliberately reuses httpCall + the existing server ID.
+    ------------------------------------------------------------------
+    ;(function()
+        local stars = {} -- [userId] = {gui, characterConnection}
+        local online = {} -- user IDs reported by /users
+        local connected = {}
+        local announced = false
+        local presenceEndpointMissing = false
+        local lastPresenceError = 0
+        local uiControls = skinSettings
+
+        local function cleanStar(userId)
+            local item = stars[userId]
+            if not item then return end
+            stars[userId] = nil
+            if item.conn then pcall(function() item.conn:Disconnect() end) end
+            if item.gui then pcall(function() item.gui:Destroy() end) end
+        end
+        local function attachStar(item, other)
+            if not item.gui or not item.gui.Parent then return end
+            local ch = other.Character
+            local head = ch and ch:FindFirstChild("Head")
+            item.gui.Adornee = head and head:IsA("BasePart") and head or nil
+        end
+        local function makeStar(other)
+            if other == player or not other.Parent then return end
+            if stars[other.UserId] then
+                attachStar(stars[other.UserId], other)
+                return
+            end
+            local pg = player:FindFirstChildOfClass("PlayerGui")
+            if not pg then return end
+            local bb = Instance.new("BillboardGui")
+            bb.Name = "TruersightUserStar_" .. other.UserId
+            bb.Size = UDim2.fromOffset(22, 23)
+            bb.StudsOffset = Vector3.new(1.7, 2.25, 0)
+            bb.AlwaysOnTop = false
+            bb.MaxDistance = 125
+            bb.LightInfluence = 0
+            local star = Instance.new("TextLabel")
+            star.Name = "TruersightStar"
+            star.Size = UDim2.fromScale(1, 1)
+            star.BackgroundTransparency = 1
+            star.Font = Enum.Font.GothamBold
+            star.Text = "★"
+            star.TextSize = 18
+            star.TextColor3 = Color3.fromRGB(255, 216, 90)
+            star.TextStrokeTransparency = 0.3
+            star.TextStrokeColor3 = Color3.fromRGB(10, 12, 18)
+            star.Parent = bb
+            bb.Parent = pg
+            local item = {gui=bb}
+            stars[other.UserId] = item
+            item.conn = other.CharacterAdded:Connect(function(character)
+                task.spawn(function()
+                    character:WaitForChild("Head", 5)
+                    if stars[other.UserId] == item then attachStar(item, other) end
+                end)
+            end)
+            attachStar(item, other)
+            if not item.gui.Adornee and other.Character then
+                task.spawn(function()
+                    other.Character:WaitForChild("Head", 5)
+                    if stars[other.UserId] == item then attachStar(item, other) end
+                end)
+            end
+        end
+        local function updateStars()
+            if stopped then return end
+            local want = {}
+            if starsModule and starsModule.enabled then
+                -- Backward compatible: skin sharers show up until the newer
+                -- Worker presence routes have been deployed.
+                for userId in pairs(activeEntries) do want[userId] = true end
+                for userId in pairs(online) do want[userId] = true end
+                for userId in pairs(want) do
+                    local other = Players:GetPlayerByUserId(userId)
+                    if other and other ~= player then
+                        makeStar(other)
+                    else
+                        want[userId] = nil
+                    end
+                end
+            end
+            for userId in pairs(stars) do
+                if not want[userId] then cleanStar(userId) end
+            end
+        end
+        -- Called by existing skin poll, without adding another renderer.
+        modules._truerSightSyncStars = updateStars
+        local function publishPresence()
+            if stopped or not presenceModule.enabled or not validJob()
+                or presenceEndpointMissing then return end
+            local response, err = httpCall("POST", "/presence", {
+                server_id=sessionJob, player_id=tostring(player.UserId)
+            })
+            if response then
+                announced = true
+                if stopped or not presenceModule.enabled then
+                    -- User opted out while the POST was in flight.
+                    announced = false
+                    httpCall("DELETE", "/presence", {
+                        server_id=sessionJob, player_id=tostring(player.UserId)
+                    })
+                end
+            elseif err and err:find("404", 1, true) then
+                presenceEndpointMissing = true
+                say("Update your Worker to enable Truersight stars.", true)
+            elseif os.clock() - lastPresenceError > 30 then
+                lastPresenceError = os.clock()
+                say("Star presence: " .. tostring(err), true)
+            end
+        end
+        local function removePresence()
+            if not announced then return end
+            announced = false
+            task.spawn(function()
+                httpCall("DELETE", "/presence", {
+                    server_id=sessionJob, player_id=tostring(player.UserId)
+                })
+            end)
+        end
+        local function pollPresence()
+            if stopped or not starsModule.enabled or not validJob()
+                or presenceEndpointMissing then return end
+            local response, err = httpCall("GET", "/users?server_id=" .. sessionJob)
+            if response and type(response.users) == "table" then
+                local latest = {}
+                for _, entry in ipairs(response.users) do
+                    local userId = tonumber(entry.player_id)
+                    if userId and userId > 0 and userId ~= player.UserId then
+                        latest[userId] = true
+                    end
+                end
+                online = latest
+                updateStars()
+            elseif err and err:find("404", 1, true) then
+                presenceEndpointMissing = true
+                -- Still marks known stand-skin sharers using existing /skins.
+                updateStars()
+            elseif os.clock() - lastPresenceError > 30 then
+                lastPresenceError = os.clock()
+                say("Star lookup: " .. tostring(err), true)
+            end
+        end
+        presenceModule = addModule(panel, "Truersight Broadcast My Star", function(on)
+            if on then task.spawn(publishPresence) else removePresence() end
+        end)
+        starsModule = addModule(panel, "Truersight Show Stars", function(on)
+            if on then task.spawn(pollPresence) else
+                online = {}
+                updateStars()
+            end
+        end)
+        for _, mod in ipairs({presenceModule, starsModule}) do
+            mod.hidden = true
+            mod.hiddenInMenu = true
+            mod.holder.Visible = false
+        end
+        if uiControls then
+            local function starSwitch(mod, label, order)
+                local button = Instance.new("TextButton")
+                button.Name = "TruersightPresenceSwitch"
+                button.LayoutOrder = order
+                button.Size = UDim2.new(1, 0, 0, 32)
+                styleButton(button)
+                button.TextSize = 11
+                button.TextXAlignment = Enum.TextXAlignment.Left
+                button.Parent = uiControls.frame
+                local function refresh()
+                    button.Text = "   " .. label .. "   [" .. (mod.enabled and "ON" or "OFF") .. "]"
+                    button.TextColor3 = mod.enabled and accent or TEXT
+                end
+                local previousSet = mod.set
+                mod.set = function(enabled)
+                    previousSet(enabled)
+                    refresh()
+                end
+                button.MouseButton1Click:Connect(function() mod.set(not mod.enabled) end)
+                refresh()
+            end
+            starSwitch(presenceModule, "Broadcast My Truersight Star", 6)
+            starSwitch(starsModule, "Show Truersight Stars", 7)
+            local hint = Instance.new("TextLabel")
+            hint.Name = "TruersightPresenceHint"
+            hint.LayoutOrder = 8
+            hint.Size = UDim2.new(1, 0, 0, 34)
+            hint.BackgroundTransparency = 1
+            hint.TextColor3 = DIM
+            hint.Font = FONT
+            hint.TextSize = 10
+            hint.TextXAlignment = Enum.TextXAlignment.Left
+            hint.TextWrapped = true
+            hint.Text = "Gold ★ = user broadcasting Truersight, or sharing a skin."
+            hint.Parent = uiControls.frame
+        end
+        local playerRemoved = Players.PlayerRemoving:Connect(function(leaving)
+            online[leaving.UserId] = nil
+            cleanStar(leaving.UserId)
+        end)
+        local playerAdded = Players.PlayerAdded:Connect(function(other)
+            -- A presence update may arrive before the Player object exists.
+            task.defer(updateStars)
+        end)
+        modules._truerSightPublishPresence = publishPresence
+        modules._truerSightPollPresence = pollPresence
+        modules._cleanupTruersightPresence = function()
+            modules._truerSightSyncStars = nil
+            announced = false -- best-effort request below avoids stale records
+            playerRemoved:Disconnect()
+            playerAdded:Disconnect()
+            for userId in pairs(stars) do cleanStar(userId) end
+            if presenceModule and presenceModule.enabled and validJob() then
+                task.spawn(function()
+                    httpCall("DELETE", "/presence", {
+                        server_id=sessionJob, player_id=tostring(player.UserId)
+                    })
+                end)
+            end
+        end
+    end)()
+
     task.spawn(function()
         local nextPublish, nextPoll, nextScan = 0, 0, 0
+        local nextPresencePublish, nextPresencePoll = 0, 0
         while not stopped do
             local now = os.clock()
             if shareModule and shareModule.enabled and now >= nextPublish then
@@ -6813,10 +7103,22 @@ end)()
                 nextScan = now + 2
                 updateRemoteSkins()
             end
+            if presenceModule and presenceModule.enabled and now >= nextPresencePublish then
+                nextPresencePublish = now + 45
+                if modules._truerSightPublishPresence then modules._truerSightPublishPresence() end
+            end
+            if starsModule and starsModule.enabled and now >= nextPresencePoll then
+                nextPresencePoll = now + 20
+                if modules._truerSightPollPresence then modules._truerSightPollPresence() end
+            end
             task.wait(1)
         end
     end)
     modules._cleanupSkinSync = function()
+        if modules._cleanupTruersightPresence then
+            pcall(modules._cleanupTruersightPresence)
+            modules._cleanupTruersightPresence = nil
+        end
         stopped = true
         pcall(function() RunService:UnbindFromRenderStep(renderName) end)
         pcall(function() poseConnection:Disconnect() end)
@@ -10125,7 +10427,7 @@ local function applyModuleSearch(text)
     local panelHasMatch = {}
     for _, m in ipairs(modules) do
         local matches = query == "" or string.find(string.lower(m.name), query, 1, true) ~= nil
-        m.holder.Visible = matches
+        m.holder.Visible = matches and not m.hiddenInMenu
         if matches then panelHasMatch[m.panel] = true end
     end
     for title, panel in pairs(panelRegistry) do
@@ -12239,7 +12541,7 @@ local qosOK, qosError = xpcall(function()
     local favouriteActions = {}
     for _, module in ipairs(modules) do
         local m = module
-        if m.holder and m.panel then
+        if m.holder and m.panel and not m.hiddenInMenu then
             local shortcut = addAction(quickPanel, "", function() m.set(not m.enabled) end)
             shortcut.MouseButton2Click:Connect(function()
                 if m.panel and m.panel.Parent then
@@ -12450,7 +12752,7 @@ local qosOK, qosError = xpcall(function()
     local bindActions = {}
     for _, module in ipairs(modules) do
         local m = module
-        if m.holder then
+        if m.holder and not m.hiddenInMenu then
             local action = addAction(bindPanel, "", function()
                 keyUiState.binding = true
                 keyUiState.bindingModule = m
@@ -13188,7 +13490,7 @@ local function applyPageSearch()
     local query = string.lower(pageSearch.Text or "")
     for _, mod in ipairs(modules) do
         if mod.holder and mod.panel and mod.panel.Name == activeNavPage then
-            mod.holder.Visible = query == "" or string.find(string.lower(mod.name), query, 1, true) ~= nil
+            mod.holder.Visible = not mod.hiddenInMenu and (query == "" or string.find(string.lower(mod.name), query, 1, true) ~= nil)
         end
     end
 end
