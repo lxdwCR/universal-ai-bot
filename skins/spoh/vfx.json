@@ -1,0 +1,38 @@
+{
+  "format": "TrueSight-SPOH-VFX-v1",
+  "name": "Star Platinum Over Heaven",
+  "aura": {
+    "enabled": true,
+    "rate": 5,
+    "lifetime": 0.55,
+    "brightness": 0.45,
+    "size": 0.5,
+    "color_start": [
+      255,
+      245,
+      188
+    ],
+    "color_end": [
+      255,
+      194,
+      54
+    ]
+  },
+  "barrage": {
+    "enabled": true,
+    "particles_per_pulse": 2,
+    "pulse_interval": 0.085,
+    "size": 0.36,
+    "lifetime": 0.25,
+    "color_start": [
+      255,
+      253,
+      215
+    ],
+    "color_end": [
+      255,
+      195,
+      55
+    ]
+  }
+}

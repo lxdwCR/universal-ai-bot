@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "spoh",
+  "name": "Star Platinum Over Heaven",
+  "model": "spohr15.rbxm",
+  "vfx": "vfx.json",
+  "rig": "R15",
+  "meshparts": 65,
+  "joints": 15,
+  "model_sha256": "406f9f9f8e8690d5ece73a26ebe73d1d348c44e8e39106e8cfeaad2b6cc5c2e6",
+  "notes": "Data files only; TrueSight executes no remote Lua from this skin pack."
+}
