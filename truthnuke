@@ -1,5 +1,4 @@
--- Truefarm LITE v15 | Dark interface, single farm toggle, automatic YBA Play entry
-
+-- Truefarm LITE v16 
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -191,6 +190,15 @@ function orbitTools.startAutoPlay()
                 task.wait(0.25)
             else
                 noGuiSince = nil
+                -- YBA may raise its loading GUI during a hop. Keep it behind
+                -- our opaque full-screen session display, including rejoin.
+                pcall(function()
+                    local screen = loading:IsA("ScreenGui") and loading
+                        or loading:FindFirstAncestorWhichIsA("ScreenGui")
+                    if screen and screen.DisplayOrder ~= 0 then screen.DisplayOrder = 0 end
+                    local hud = pg:FindFirstChild("TruefarmLITEFullscreenHUD")
+                    if hud and hud.DisplayOrder ~= 50000 then hud.DisplayOrder = 50000 end
+                end)
                 local function visible(node)
                     local cursor = node
                     while cursor and cursor ~= pg do
@@ -252,25 +260,56 @@ function orbitTools.startAutoPlay()
                     if (not activated or buttonAttempts >= 3) and chosen.AbsoluteSize.X>0 and chosen.AbsoluteSize.Y>0 then
                         local ok,vim=pcall(function() return game:GetService("VirtualInputManager") end)
                         if ok and vim then
-                            -- A full-screen farm HUD can cover the game Play button.
-                            -- Temporarily allow the input through for a single click.
-                            local states = {}
-                            for _,guiName in ipairs({"TruefarmLITE","TruefarmLITEFullscreenHUD"}) do
-                                local gui=pg:FindFirstChild(guiName)
-                                if gui and gui:IsA("ScreenGui") then
-                                    states[#states+1]={gui,gui.Enabled}
-                                    gui.Enabled=false
+                            -- First try a focused UI confirm without hiding the farm HUD.
+                            -- If a physical click is needed, hold a static HUD copy
+                            -- above the loading GUI so the session screen never blinks.
+                            if buttonAttempts < 5 then
+                                local selected
+                                local focusOk=pcall(function()
+                                    local service=game:GetService("GuiService")
+                                    selected=service.SelectedObject
+                                    service.SelectedObject=chosen
+                                    vim:SendKeyEvent(true,Enum.KeyCode.Return,false,game)
+                                    vim:SendKeyEvent(false,Enum.KeyCode.Return,false,game)
+                                    service.SelectedObject=selected
+                                end)
+                                activated=activated or focusOk
+                            else
+                                local hud=pg:FindFirstChild("TruefarmLITEFullscreenHUD")
+                                local menu=pg:FindFirstChild("TruefarmLITE")
+                                local guard
+                                if hud and hud.Enabled then
+                                    local ok,snapshot=pcall(function()
+                                        local clone=hud:Clone()
+                                        clone.Name="TruefarmLITELoadingGuard"
+                                        clone.DisplayOrder=50100
+                                        -- Snapshot isn't interactive. The real screen
+                                        -- comes back as soon as the click is sent.
+                                        for _,obj in ipairs(clone:GetDescendants()) do
+                                            if obj:IsA("GuiButton") then
+                                                obj.Active=false
+                                                obj.Selectable=false
+                                            end
+                                        end
+                                        clone.Parent=pg
+                                        return clone
+                                    end)
+                                    if ok then guard=snapshot end
                                 end
-                            end
-                            task.wait()
-                            local at=chosen.AbsolutePosition + chosen.AbsoluteSize/2
-                            activated=pcall(function()
-                                vim:SendMouseButtonEvent(at.X,at.Y,0,true,game,0)
-                                task.wait(0.04)
-                                vim:SendMouseButtonEvent(at.X,at.Y,0,false,game,0)
-                            end)
-                            for _,state in ipairs(states) do
-                                if state[1].Parent then state[1].Enabled=state[2] end
+                                local hudWasOn=hud and hud.Enabled
+                                local menuWasOn=menu and menu.Enabled
+                                if hud then hud.Enabled=false end
+                                if menu then menu.Enabled=false end
+                                task.wait()
+                                local at=chosen.AbsolutePosition + chosen.AbsoluteSize/2
+                                activated=pcall(function()
+                                    vim:SendMouseButtonEvent(at.X,at.Y,0,true,game,0)
+                                    task.wait(0.04)
+                                    vim:SendMouseButtonEvent(at.X,at.Y,0,false,game,0)
+                                end)
+                                if hud and hud.Parent then hud.Enabled=hudWasOn end
+                                if menu and menu.Parent then menu.Enabled=menuWasOn end
+                                if guard then guard:Destroy() end
                             end
                         end
                     end
@@ -329,7 +368,7 @@ local function atItemCap(name)
     return cap ~= nil and itemCount(name) >= cap
 end
 local hopAfterSeconds = 25
-local HOP_FILE = "Truefarm_LITE_v15.lua"
+local HOP_FILE = "Truefarm_LITE_v16.lua"
 local smoothedPing, pingLastSample, pingLastDisplay = nil, 0, 0
 local emptySince, hopInProgress, hopLastTry, hopVisited = nil, false, -math.huge, {}
 
@@ -1657,6 +1696,9 @@ do
         obj.TextSize = size or 12
         obj.TextXAlignment = align or Enum.TextXAlignment.Left
         obj.TextYAlignment = Enum.TextYAlignment.Center
+        -- Status and compact descriptions never draw over adjacent controls.
+        obj.TextTruncate = Enum.TextTruncate.AtEnd
+        obj.ClipsDescendants = true
         obj.Position = UDim2.fromOffset(x, y)
         obj.Size = UDim2.fromOffset(w, h)
         obj.Parent = parent
@@ -1763,7 +1805,7 @@ do
     ui = Instance.new("ScreenGui")
     ui.Name = "TruefarmLITE"
     ui.ResetOnSpawn = false
-    ui.DisplayOrder = 190 -- settings menu is above the full-screen farm HUD
+    ui.DisplayOrder = 50010 -- Keep settings over the farm HUD and YBA loading GUI
     ui.IgnoreGuiInset = true
     ui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     local pg = player:WaitForChild("PlayerGui", 10)
@@ -1771,6 +1813,7 @@ do
     ui.Parent = pg
 
     uiRefs.panel = box(ui, 0, 0, 686, 609, C.shell, 15)
+    uiRefs.panel.Visible = false -- Hide before any menu elements render.
     uiRefs.panel.AnchorPoint = Vector2.new(0.5, 0.5)
     uiRefs.panel.Position = UDim2.fromScale(0.5, 0.5)
     outlined(uiRefs.panel, C.line, 1.2, 0.08)
@@ -1793,7 +1836,7 @@ do
     label(logo, "TF", 0, 0, 43, 43, 17, C.text, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
     label(uiRefs.panel, "TRUEFARM", 75, 16, 153, 25, 19, C.text, Enum.Font.GothamBold)
     label(uiRefs.panel, "LITE", 229, 17, 65, 24, 16, C.cyan, Enum.Font.GothamBold)
-    label(uiRefs.panel, "PRIVATE FARM CONTROL  /  DIRECT PROMPT", 76, 41, 338, 14, 10, C.dim)
+    label(uiRefs.panel, "made by gummywaffen", 76, 41, 284, 16, 11, C.dim)
     local headerBadge = box(uiRefs.panel, 443, 23, 94, 28, C.inset, 9)
     uiRefs.runPill = label(headerBadge, "●  IDLE", 0, 0, 94, 28, 11, C.dim, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
     uiRefs.minBtn = button(uiRefs.panel, "–", 558, 19, 42, 37, C.surface, 9, 18)
@@ -1835,8 +1878,8 @@ do
     label(side, "COLLECTION", 14, 343, 125, 18, 10, C.muted, Enum.Font.GothamSemibold)
     label(side, "●  Direct Prompt", 14, 367, 126, 20, 11, C.cyan, Enum.Font.GothamSemibold)
     label(side, "●  Auto Ping", 14, 388, 126, 18, 11, C.green, Enum.Font.GothamSemibold)
-    label(side, "Right Shift  ·  Hide", 14, 421, 129, 16, 10, C.dim)
-    label(side, "Drag header to move", 14, 440, 129, 16, 10, C.muted)
+    label(side, "Right Shift  ·  Menu", 14, 421, 129, 16, 10, C.dim)
+    label(side, "Drag top bar to move", 14, 440, 129, 16, 10, C.muted)
 
     for _, name in ipairs({"farm", "movement", "selling", "events", "activity", "system"}) do
         local page = box(uiRefs.panel, 184, 86, 484, 464, C.canvas, 12)
@@ -1845,7 +1888,7 @@ do
         uiRefs.pages[name] = page
     end
     local farm = uiRefs.pages.farm
-    header(farm, "Farm dashboard", "Track item collection and configure how you travel.")
+    header(farm, "Farm dashboard", "Your farm at a glance.")
     local metrics = box(farm, 18, 73, 452, 68, C.inset, 10)
     outlined(metrics, C.softLine, 1, 0.45)
     label(metrics, "WORLD ITEMS", 13, 7, 129, 15, 9, C.muted, Enum.Font.GothamSemibold)
@@ -1860,23 +1903,23 @@ do
     uiRefs.farmToggle.AutoButtonColor = false
     uiRefs.farmState = label(uiRefs.farmToggle, "OFF", 395, 7, 44, 28,
         11, C.muted, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
-    label(farm, "One-click farm control  ·  Select again to stop", 20, 196, 420, 10, 9, C.muted)
+    -- Deliberately omit a second instruction line under the start button.
     uiRefs.scanBtn = button(farm, "⌕  RESCAN WORLD ITEMS", 18, 207, 452, 35, C.surface, 9, 11)
     label(farm, "OPERATING MODE", 20, 252, 220, 19, 10, C.muted, Enum.Font.GothamSemibold)
     uiRefs.modeBtn = button(farm, "FAST", 18, 275, 452, 36, C.purpleDark, 9, 12)
-    uiRefs.undergroundBtn = toggleRow(farm, "Under-floor travel", "Approach items beneath the map", 324, 219)
-    uiRefs.orbitBtn = toggleRow(farm, "Circle tween", "Move while searching", 324, 219)
+    uiRefs.undergroundBtn = toggleRow(farm, "Under-floor travel", "Stay below the map", 324, 219)
+    uiRefs.orbitBtn = toggleRow(farm, "Circle tween", "Roam between pickups", 324, 219)
     uiRefs.orbitBtn.Position = UDim2.fromOffset(251, 324)
-    uiRefs.floorBtn = toggleRow(farm, "Local support floor", "Keep character supported", 389, 219)
-    uiRefs.positionBobBtn = toggleRow(farm, "Position bob", "Small pre-pickup settle", 389, 219)
+    uiRefs.floorBtn = toggleRow(farm, "Local support floor", "Stay steady underground", 389, 219)
+    uiRefs.positionBobBtn = toggleRow(farm, "Position bob", "Ease into pickups", 389, 219)
     uiRefs.positionBobBtn.Position = UDim2.fromOffset(251, 389)
     uiRefs.infoLabel = label(farm, "World: 0  Ready: 0  Got: 0", 18, 446, 440, 13, 9, C.muted)
     uiRefs.statsDetail = label(uiRefs.panel, "0.0/min  •  No attempts", 192, 561, 237, 16, 10, C.dim)
     uiRefs.scanHint = label(uiRefs.panel, "Prompts 0  ·  Full 0", 436, 561, 226, 16, 10, C.muted, Enum.Font.Gotham, Enum.TextXAlignment.Right)
 
     local move = uiRefs.pages.movement
-    header(move, "Movement & timing", "Adjust how quickly the farm travels to an item.")
-    uiRefs.autoHopBtn = toggleRow(move, "Automatic server hop", "Hop when the item folder is empty", 68)
+    header(move, "Movement & timing", "Tune travel and timing.")
+    uiRefs.autoHopBtn = toggleRow(move, "Automatic server hop", "Switch servers when idle", 68)
     uiRefs.setHopSlider = slider(move, "SERVER HOP AFTER", 88, 1, 60, 1,
         function(v) return string.format("%d sec", v) end,
         function(v) if uiRefs.onHopSlide then uiRefs.onHopSlide(v) end end)
@@ -1894,41 +1937,43 @@ do
         function(v) if uiRefs.onScanSlide then uiRefs.onScanSlide(v) end end)
 
     local selling = uiRefs.pages.selling
-    header(selling, "Inventory & sales", "Sell common items automatically at the stack limit.")
-    uiRefs.autoSellBtn = toggleRow(selling, "Sell at maximum stack", "Checked against verified item-cap values", 72)
+    header(selling, "Inventory & sales", "Sell full stacks while you farm.")
+    uiRefs.autoSellBtn = toggleRow(selling, "Sell at maximum stack", "Sell when stacks are full", 72)
     uiRefs.manualSellBtn = button(selling, "SELL NOW  ·  LARGEST STACK", 18, 144, 452, 43, C.purpleDark, 10, 12)
-    uiRefs.legacySellBtn = toggleRow(selling, "Legacy Merchant fallback", "Older NukeVsCity method · optional", 208)
+    uiRefs.legacySellBtn = toggleRow(selling, "Legacy Merchant fallback", "Older Merchant method", 208)
     local merchantCard = box(selling, 18, 278, 452, 141, C.inset, 10)
     outlined(merchantCard, C.softLine, 1, 0.45)
     label(merchantCard, "MERCHANT STATUS", 14, 10, 421, 19, 10, C.cyan, Enum.Font.GothamSemibold)
     uiRefs.sellStatus = label(merchantCard, "Monitoring common-item stack limits...", 14, 36, 423, 98, 12, C.text)
     uiRefs.sellStatus.TextWrapped = true
+    uiRefs.sellStatus.TextTruncate = Enum.TextTruncate.None
     uiRefs.sellStatus.TextYAlignment = Enum.TextYAlignment.Top
     label(selling, "Lucky items and event candy are excluded from Auto Sell.", 20, 437, 448, 16, 10, C.dim)
 
     local eventsPage = uiRefs.pages.events
-    header(eventsPage, "Event automation", "Optional exchanges that run between farm actions.")
-    uiRefs.autoCandyBtn = toggleRow(eventsPage, "Automatically turn in candy", "Trade at Jack when the candy threshold is reached", 72)
+    header(eventsPage, "Event automation", "Candy and Lucky Arrow trades.")
+    uiRefs.autoCandyBtn = toggleRow(eventsPage, "Automatically turn in candy", "Trade with Jack at your limit", 72)
     uiRefs.setCandyThreshold = slider(eventsPage, "CANDY TURN-IN THRESHOLD", 144, 1, 45, 1,
         function(v) return string.format("%d candies", v) end,
         function(v) if uiRefs.onCandySlide then uiRefs.onCandySlide(v) end end)
-    uiRefs.autoLuckyBtn = toggleRow(eventsPage, "Automatically buy Lucky Arrows", "Requires balance and item-count confirmation", 236)
+    uiRefs.autoLuckyBtn = toggleRow(eventsPage, "Automatically buy Lucky Arrows", "Buy when you have enough cash", 236)
     local eventPanel = box(eventsPage, 18, 307, 452, 115, C.inset, 10)
     outlined(eventPanel, C.softLine, 1, 0.45)
     label(eventPanel, "EVENT STATUS", 14, 10, 424, 19, 10, C.cyan, Enum.Font.GothamSemibold)
     uiRefs.eventStatus = label(eventPanel, "Candy 0  ·  Lucky 0  ·  Cash $0", 14, 34, 426, 75, 12, C.text)
     uiRefs.eventStatus.TextWrapped = true
+    uiRefs.eventStatus.TextTruncate = Enum.TextTruncate.None
     uiRefs.eventStatus.TextYAlignment = Enum.TextYAlignment.Top
     uiRefs.manualCandyBtn = button(eventsPage, "TURN IN CANDY NOW  ·  TEST JACK", 18, 428, 452, 31, C.purpleDark, 8, 11)
 
     local activity = uiRefs.pages.activity
-    header(activity, "Activity & diagnostics", "Recent events, scan results and troubleshooting.")
+    header(activity, "Activity & diagnostics", "Actions, scans and alerts.")
     uiRefs.copyBtn = button(activity, "COPY SESSION LOG", 18, 72, 452, 40, C.purpleDark, 9, 12)
     local systemPage = uiRefs.pages.system
-    header(systemPage, "Session & connections", "Customize the farm screen and connectivity.")
-    uiRefs.hudToggle = toggleRow(systemPage, "Session farm screen", "Overlay stays visible while the menu is hidden", 74)
-    uiRefs.rejoinToggle = toggleRow(systemPage, "Rejoin on disconnect (best effort)", "Roblox may terminate client scripts before recovery", 140)
-    uiRefs.webhookToggle = toggleRow(systemPage, "Webhook notifications", "Optional updates; no username or account details", 206)
+    header(systemPage, "Session & connections", "Your display and connections.")
+    uiRefs.hudToggle = toggleRow(systemPage, "Session farm screen", "On-screen farm stats", 74)
+    uiRefs.rejoinToggle = toggleRow(systemPage, "Rejoin on disconnect (best effort)", "Retry if disconnected", 140)
+    uiRefs.webhookToggle = toggleRow(systemPage, "Webhook notifications", "Send farm updates", 206)
     uiRefs.webhookBox = Instance.new("TextBox")
     uiRefs.webhookBox.Name="WebhookURL"
     uiRefs.webhookBox.PlaceholderText="Paste your HTTPS webhook URL"
@@ -1950,18 +1995,19 @@ do
     uiRefs.setWebhookInterval = slider(systemPage,"WEBHOOK UPDATE INTERVAL",351,60,900,30,
         function(v) return string.format("%.1f min",v/60) end,
         function(v) if uiRefs.onWebhookSlide then uiRefs.onWebhookSlide(v) end end)
-    label(systemPage, "AUTO ENTER  ·  YBA Skip / Play watcher enabled on join", 20, 439, 446, 14, 10, C.cyan)
+    label(systemPage, "Auto Play is on", 20, 439, 446, 14, 10, C.cyan)
     local previewBox = box(activity, 18, 125, 452, 313, C.inset, 10)
     outlined(previewBox, C.softLine, 1, 0.45)
     label(previewBox, "LIVE LOG", 15, 11, 401, 17, 10, C.muted, Enum.Font.GothamSemibold)
     uiRefs.logPreview = label(previewBox, "No recent events", 15, 33, 420, 265, 11, C.dim)
     uiRefs.logPreview.TextWrapped = true
-    uiRefs.logPreview.TextYAlignment = Enum.TextYAlignment.Top
     uiRefs.logPreview.TextTruncate = Enum.TextTruncate.AtEnd
+    uiRefs.logPreview.TextYAlignment = Enum.TextYAlignment.Top
 
     box(uiRefs.panel, 184, 558, 484, 1, C.line, 0)
-    uiRefs.status = label(uiRefs.panel, "Ready. Press Start to begin.", 190, 577, 312, 18, 11, C.text)
-    uiRefs.pingLabel = label(uiRefs.panel, "PING  ·  Sampling", 508, 578, 153, 16, 10, C.cyan, Enum.Font.GothamSemibold, Enum.TextXAlignment.Right)
+    uiRefs.status = label(uiRefs.panel, "Ready", 190, 577, 292, 18, 11, C.text)
+    uiRefs.status.TextTruncate = Enum.TextTruncate.AtEnd
+    uiRefs.pingLabel = label(uiRefs.panel, "PING  ·  Sampling", 500, 578, 161, 16, 10, C.cyan, Enum.Font.GothamSemibold, Enum.TextXAlignment.Right)
 
     local function tab(selected)
         for name, page in pairs(uiRefs.pages) do
@@ -1995,6 +2041,9 @@ do
         scaler.Scale = math.min(1, math.max(0.58, (viewport.X - 28)/686), math.max(0.58, (viewport.Y - 28)/609))
     end
     uiRefs.rescale()
+    -- The session farm display is primary. Open settings only on Right Shift.
+    uiRefs.panel.Visible = false
+    uiRefs.restoreBtn.Visible = false
 end
 
 -- =======================================
@@ -2209,7 +2258,7 @@ do
             TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true})
     end
     local hud=make("ScreenGui",player:WaitForChild("PlayerGui"),{
-        Name="TruefarmLITEFullscreenHUD",ResetOnSpawn=false,DisplayOrder=180,
+        Name="TruefarmLITEFullscreenHUD",ResetOnSpawn=false,DisplayOrder=50000,
         IgnoreGuiInset=true,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
     uiRefs.hudGui=hud
     local root=make("Frame",hud,{Name="SessionOverlay",BackgroundColor3=C.bg,
@@ -2226,7 +2275,7 @@ do
     make("UISizeConstraint",container,{MaxSize=Vector2.new(1160,950),MinSize=Vector2.new(310,300)})
     local heading=text(container,"◈  TRUEFARM  /  LITE",UDim2.fromScale(0,0),
         UDim2.new(0.68,0,0,44),C.white,27,true)
-    local eyebrow=text(container,"LIVE FARM SESSION   •   DIRECT PROMPT",UDim2.new(0,0,0,42),
+    local eyebrow=text(container,"made by gummywaffen  ·  Live farm stats",UDim2.new(0,0,0,42),
         UDim2.new(0.82,0,0,24),C.muted,12,true)
     local line=make("Frame",container,{BackgroundColor3=C.purple,BorderSizePixel=0,
         Position=UDim2.new(0,0,0,76),Size=UDim2.new(1,0,0,3)})
@@ -2244,6 +2293,8 @@ do
         UDim2.new(1,-45,0,20),C.muted,11,true)
     uiRefs.hudStatus=text(statusCard,orbitTools.session.status,UDim2.new(0,24,0,38),
         UDim2.new(1,-45,0,61),C.aqua,21,true)
+    uiRefs.hudStatus.TextTruncate=Enum.TextTruncate.AtEnd
+    uiRefs.hudStatus.ClipsDescendants=true
     local metrics=make("Frame",container,{BackgroundTransparency=1,
         Position=UDim2.new(0,0,0,223),Size=UDim2.new(1,0,0,112)})
     local tiles={{label="TOTAL MONEY EARNED",kind="money"},{label="LUCKY ARROWS BOUGHT",kind="lucky"},
@@ -2301,13 +2352,13 @@ local function updateStats()
     end
     -- World is the replicated item folder count; Ready requires an enabled prompt,
     -- direct executor API, inventory headroom, and no temporary cooldown.
-    uiRefs.infoLabel.Text = string.format("World %d   |   Ready %d   |   Pickups %d",
+    uiRefs.infoLabel.Text = string.format("World %d  ·  Ready %d  ·  Got %d",
         orbitTools.scanStats.raw or 0, foundCount, confirmedPickups)
     uiRefs.worldMetric.Text = tostring(orbitTools.scanStats.raw or 0)
     uiRefs.readyMetric.Text = tostring(foundCount)
     uiRefs.gotMetric.Text = tostring(confirmedPickups)
-    uiRefs.statsDetail.Text = string.format("%.1f pickups/min  •  Attempts: %d", perMinute, pickupAttempts)
-    uiRefs.scanHint.Text = string.format("Prompts: %d  |  No prompt: %d  |  Capped: %d",
+    uiRefs.statsDetail.Text = string.format("%.1f/min  ·  %d attempts", perMinute, pickupAttempts)
+    uiRefs.scanHint.Text = string.format("Prompts %d  ·  Missing %d  ·  Full %d",
         orbitTools.scanStats.promptReady or 0, orbitTools.scanStats.noPrompt or 0, orbitTools.scanStats.capped or 0)
     if uiRefs.lastFarmToggleState ~= autoRunning then
         uiRefs.lastFarmToggleState = autoRunning
@@ -2345,7 +2396,7 @@ local function log(message)
     -- Keep a rolling record even if the game disconnects immediately afterwards.
     if type(writefile) == "function" and os.clock() - orbitTools.lastLogSave >= 0.75 then
         orbitTools.lastLogSave = os.clock()
-        pcall(writefile, "Truefarm_LITE_v15_Log.txt", table.concat(logs, "\n"))
+        pcall(writefile, "Truefarm_LITE_v16_Log.txt", table.concat(logs, "\n"))
     end
 end
 -- Read ping and smooth out brief spikes.
@@ -2667,7 +2718,7 @@ end
 
 function orbitTools.saveFarmLog()
     if type(writefile) ~= "function" then return end
-    pcall(writefile, "Truefarm_LITE_v15_Log.txt", table.concat(logs, "\n"))
+    pcall(writefile, "Truefarm_LITE_v16_Log.txt", table.concat(logs, "\n"))
 end
 
 -- Inventory must increase to count a confirmed acquisition. World-model removal
@@ -4273,9 +4324,8 @@ end
 
 -- Minimise without stopping the farm; keyboard and floating dock can restore it.
 uiRefs.toggleVisible = function()
-    local show = not uiRefs.panel.Visible
-    uiRefs.panel.Visible = show
-    uiRefs.restoreBtn.Visible = not show
+    uiRefs.panel.Visible = not uiRefs.panel.Visible
+    uiRefs.restoreBtn.Visible = false
 end
 connect(uiRefs.minBtn.MouseButton1Click, uiRefs.toggleVisible)
 connect(uiRefs.restoreBtn.MouseButton1Click, uiRefs.toggleVisible)
@@ -4382,7 +4432,7 @@ end)
 orbitTools.updateEventStatus()
 orbitTools.installSpawnWatchers()
 orbitTools.startAutoPlay()
-log("Truefarm LITE v15 ready | Remote spawn hints + world scan | Direct Prompt | RightShift toggles GUI")
+log("Truefarm LITE v16 ready | Remote spawn hints + world scan | Direct Prompt | RightShift toggles GUI")
 if hopResume then
     if orbitTools.setActivity then orbitTools.setActivity("Joining server · auto Play + restoring session") end
     task.spawn(function()
