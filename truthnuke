@@ -1,9 +1,5 @@
--- Truefarm LITE v14 | Auto-hop recovery and diagnostics; Direct Prompt
--- Based on TrueSight v22 direct-prompt behaviour. Enabled item prompts are required.
--- The executor must expose fireproximityprompt for direct interaction.
--- All observations are client-side; no method here guarantees avoidance of bans.
--- Item caps and optional merchant selling. Skips full stacks without retry spam.
--- Stop restores the map, camera, and your character's collision.
+-- Truefarm LITE v15 | Dark interface, single farm toggle, automatic YBA Play entry
+
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -172,6 +168,128 @@ orbitTools.lastRemoteSignalNote = -math.huge
 orbitTools.REMOTE_LEAD_TTL = 75
 orbitTools.REMOTE_LEAD_MAX_TRIES = 3
 
+-- YBA loading-screen assistant.  Only inspects buttons inside PlayerGui.LoadingScreen.
+-- It waits for the actual button rather than trying to bypass Roblox network loading.
+-- Independent of character readiness and safe to call after each queued hop.
+function orbitTools.startAutoPlay()
+    if orbitTools.autoPlayStarted then return end
+    orbitTools.autoPlayStarted = true
+    task.spawn(function()
+        local deadline = os.clock() + 100
+        local lastActionAt = -math.huge
+        local activatedOnce = false
+        local noGuiSince = nil
+        local previousButton, buttonAttempts = nil, 0
+        while alive and os.clock() < deadline do
+            local pg = player:FindFirstChild("PlayerGui")
+            local loading = pg and pg:FindFirstChild("LoadingScreen", true)
+            if not loading then
+                if activatedOnce then
+                    noGuiSince = noGuiSince or os.clock()
+                    if os.clock()-noGuiSince > 1.5 then break end
+                end
+                task.wait(0.25)
+            else
+                noGuiSince = nil
+                local function visible(node)
+                    local cursor = node
+                    while cursor and cursor ~= pg do
+                        if cursor:IsA("GuiObject") and not cursor.Visible then return false end
+                        if cursor:IsA("ScreenGui") and not cursor.Enabled then return false end
+                        cursor = cursor.Parent
+                    end
+                    return true
+                end
+                local chosen, chosenKind
+                for _,candidate in ipairs(loading:GetDescendants()) do
+                    if candidate:IsA("GuiButton") and visible(candidate) then
+                        local name = candidate.Name:lower():gsub("[^%a]", "")
+                        local title = candidate:IsA("TextButton") and candidate.Text:lower():gsub("[^%a]", "") or ""
+                        if name=="play" or name=="playbutton" or title=="play" or title=="pressplay" then
+                            chosen, chosenKind = candidate, "PLAY"
+                            break
+                        elseif not chosen and (name=="skip" or name=="skipbutton" or title=="skip") then
+                            chosen, chosenKind = candidate, "SKIP"
+                        end
+                    end
+                end
+                if chosen and os.clock()-lastActionAt > 0.85 then
+                    lastActionAt = os.clock()
+                    if chosen ~= previousButton then
+                        previousButton, buttonAttempts = chosen, 0
+                    end
+                    buttonAttempts += 1
+                    local activated = false
+                    local gc = (type(env)=="table" and rawget(env,"getconnections")) or getconnections
+                    if type(gc)=="function" then
+                        local ok, list = pcall(gc,chosen.MouseButton1Click)
+                        if ok and type(list)=="table" then
+                            for _,conn in ipairs(list) do
+                                local enabled,fire,fn = true,nil,nil
+                                pcall(function() enabled = conn.Enabled ~= false end)
+                                pcall(function() fire=conn.Fire end)
+                                pcall(function() fn=conn.Function end)
+                                if enabled then
+                                    if type(fire)=="function" then
+                                        activated=pcall(function() conn:Fire() end)
+                                    elseif type(fn)=="function" then
+                                        activated=pcall(fn)
+                                    end
+                                    if activated then break end
+                                end
+                            end
+                        end
+                    end
+                    if not activated then
+                        local fs=(type(env)=="table" and rawget(env,"firesignal")) or firesignal
+                        if type(fs)=="function" then
+                            activated=pcall(fs,chosen.MouseButton1Click)
+                        end
+                    end
+                    -- A successful firesignal call is not proof that the game's
+                    -- Play handler ran. If the same button remains, also try a
+                    -- physical click on the third attempt.
+                    if (not activated or buttonAttempts >= 3) and chosen.AbsoluteSize.X>0 and chosen.AbsoluteSize.Y>0 then
+                        local ok,vim=pcall(function() return game:GetService("VirtualInputManager") end)
+                        if ok and vim then
+                            -- A full-screen farm HUD can cover the game Play button.
+                            -- Temporarily allow the input through for a single click.
+                            local states = {}
+                            for _,guiName in ipairs({"TruefarmLITE","TruefarmLITEFullscreenHUD"}) do
+                                local gui=pg:FindFirstChild(guiName)
+                                if gui and gui:IsA("ScreenGui") then
+                                    states[#states+1]={gui,gui.Enabled}
+                                    gui.Enabled=false
+                                end
+                            end
+                            task.wait()
+                            local at=chosen.AbsolutePosition + chosen.AbsoluteSize/2
+                            activated=pcall(function()
+                                vim:SendMouseButtonEvent(at.X,at.Y,0,true,game,0)
+                                task.wait(0.04)
+                                vim:SendMouseButtonEvent(at.X,at.Y,0,false,game,0)
+                            end)
+                            for _,state in ipairs(states) do
+                                if state[1].Parent then state[1].Enabled=state[2] end
+                            end
+                        end
+                    end
+                    if activated then
+                        activatedOnce = true
+                        orbitTools.lastAutoPlayResult = chosenKind .. " requested"
+                    else
+                        orbitTools.lastAutoPlayResult = chosenKind .. " visible; executor click unavailable"
+                    end
+                end
+                if activatedOnce and loading:IsA("ScreenGui") and not loading.Enabled then
+                    break
+                end
+                task.wait(0.24)
+            end
+        end
+    end)
+end
+
 orbitTools.NAME_ALIASES = {
     ["Rib Cage of the Saint's Corpse"] = "Rib Cage of The Saint's Corpse",
     ["Rib Cage of The Saints Corpse"] = "Rib Cage of The Saint's Corpse",
@@ -211,7 +329,7 @@ local function atItemCap(name)
     return cap ~= nil and itemCount(name) >= cap
 end
 local hopAfterSeconds = 25
-local HOP_FILE = "Truefarm_LITE_v14.lua"
+local HOP_FILE = "Truefarm_LITE_v15.lua"
 local smoothedPing, pingLastSample, pingLastDisplay = nil, 0, 0
 local emptySince, hopInProgress, hopLastTry, hopVisited = nil, false, -math.huge, {}
 
@@ -1497,13 +1615,13 @@ orbitTools.view = {pages = {}, tabButtons = {}, toggleIndicators = {}}
 local uiRefs = orbitTools.view
 do
     local C = {
-        shell = Color3.fromRGB(15, 16, 27), canvas = Color3.fromRGB(22, 24, 38),
-        surface = Color3.fromRGB(29, 31, 49), inset = Color3.fromRGB(21, 23, 37),
-        line = Color3.fromRGB(51, 54, 78), softLine = Color3.fromRGB(43, 46, 67),
-        text = Color3.fromRGB(244, 243, 252), dim = Color3.fromRGB(171, 175, 199),
-        muted = Color3.fromRGB(119, 127, 152), purple = Color3.fromRGB(147, 119, 247),
-        purpleDark = Color3.fromRGB(64, 51, 104), cyan = Color3.fromRGB(119, 220, 217),
-        green = Color3.fromRGB(111, 223, 173), red = Color3.fromRGB(240, 139, 148)
+        shell = Color3.fromRGB(8, 9, 16), canvas = Color3.fromRGB(12, 14, 23),
+        surface = Color3.fromRGB(22, 25, 38), inset = Color3.fromRGB(16, 18, 29),
+        line = Color3.fromRGB(49, 46, 69), softLine = Color3.fromRGB(38, 40, 59),
+        text = Color3.fromRGB(242, 241, 254), dim = Color3.fromRGB(156, 161, 189),
+        muted = Color3.fromRGB(106, 115, 144), purple = Color3.fromRGB(166, 112, 255),
+        purpleDark = Color3.fromRGB(47, 32, 87), cyan = Color3.fromRGB(107, 221, 224),
+        green = Color3.fromRGB(91, 226, 176), red = Color3.fromRGB(242, 112, 144)
     }
     local function rounded(obj, px)
         local corner = Instance.new("UICorner")
@@ -1656,6 +1774,14 @@ do
     uiRefs.panel.AnchorPoint = Vector2.new(0.5, 0.5)
     uiRefs.panel.Position = UDim2.fromScale(0.5, 0.5)
     outlined(uiRefs.panel, C.line, 1.2, 0.08)
+    local shellGradient = Instance.new("UIGradient")
+    shellGradient.Rotation = 110
+    shellGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, C.shell),
+        ColorSequenceKeypoint.new(0.56, Color3.fromRGB(13, 12, 26)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 15, 24))
+    })
+    shellGradient.Parent = uiRefs.panel
     local accent = box(uiRefs.panel, 0, 0, 686, 3, C.purple, 0)
     local accentGradient = Instance.new("UIGradient")
     accentGradient.Color = ColorSequence.new({
@@ -1667,7 +1793,7 @@ do
     label(logo, "TF", 0, 0, 43, 43, 17, C.text, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
     label(uiRefs.panel, "TRUEFARM", 75, 16, 153, 25, 19, C.text, Enum.Font.GothamBold)
     label(uiRefs.panel, "LITE", 229, 17, 65, 24, 16, C.cyan, Enum.Font.GothamBold)
-    label(uiRefs.panel, "TRUESIGHT-STYLE  /  FARM AUTOMATION", 76, 41, 338, 14, 10, C.dim)
+    label(uiRefs.panel, "PRIVATE FARM CONTROL  /  DIRECT PROMPT", 76, 41, 338, 14, 10, C.dim)
     local headerBadge = box(uiRefs.panel, 443, 23, 94, 28, C.inset, 9)
     uiRefs.runPill = label(headerBadge, "●  IDLE", 0, 0, 94, 28, 11, C.dim, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
     uiRefs.minBtn = button(uiRefs.panel, "–", 558, 19, 42, 37, C.surface, 9, 18)
@@ -1677,7 +1803,7 @@ do
     uiRefs.dragBar.BackgroundTransparency = 1
     uiRefs.dragBar.Active = true
     uiRefs.dragBar.ZIndex = 10
-    uiRefs.restoreBtn = button(ui, "TF   TRUEFARM LITE   ▲", 21, 94, 213, 40, C.purpleDark, 10, 12)
+    uiRefs.restoreBtn = button(ui, "◈  TRUEFARM LITE   ▲", 21, 94, 213, 40, C.purpleDark, 10, 12)
     uiRefs.restoreBtn.Visible = false
     uiRefs.restoreBtn.ZIndex = 20
     box(uiRefs.panel, 18, 73, 650, 1, C.line, 0)
@@ -1700,6 +1826,10 @@ do
         p.PaddingLeft = UDim.new(0, 13)
         p.Parent = b
         uiRefs.tabButtons[item[1]] = b
+        uiRefs.tabAccents = uiRefs.tabAccents or {}
+        local marker = box(b, 0, 9, 3, 22, C.purple, 2)
+        marker.Visible = false
+        uiRefs.tabAccents[item[1]] = marker
     end
     box(side, 14, 332, 127, 1, C.line, 0)
     label(side, "COLLECTION", 14, 343, 125, 18, 10, C.muted, Enum.Font.GothamSemibold)
@@ -1724,8 +1854,13 @@ do
     uiRefs.worldMetric = label(metrics, "0", 13, 25, 119, 34, 24, C.text, Enum.Font.GothamBold)
     uiRefs.readyMetric = label(metrics, "0", 165, 25, 114, 34, 24, C.cyan, Enum.Font.GothamBold)
     uiRefs.gotMetric = label(metrics, "0", 322, 25, 115, 34, 24, C.green, Enum.Font.GothamBold)
-    uiRefs.startBtn = button(farm, "▶  START FARM", 18, 153, 219, 43, Color3.fromRGB(45, 116, 96), 10, 13)
-    uiRefs.stopBtn = button(farm, "■  STOP FARM", 248, 153, 222, 43, Color3.fromRGB(104, 52, 70), 10, 13)
+    uiRefs.farmToggle = button(farm, "▶  START FARM", 18, 153, 452, 43, C.purpleDark, 10, 13)
+    uiRefs.farmOutline = outlined(uiRefs.farmToggle, C.purple, 1.2, 0.36)
+    uiRefs.farmToggle.Font = Enum.Font.GothamBold
+    uiRefs.farmToggle.AutoButtonColor = false
+    uiRefs.farmState = label(uiRefs.farmToggle, "OFF", 395, 7, 44, 28,
+        11, C.muted, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+    label(farm, "One-click farm control  ·  Select again to stop", 20, 196, 420, 10, 9, C.muted)
     uiRefs.scanBtn = button(farm, "⌕  RESCAN WORLD ITEMS", 18, 207, 452, 35, C.surface, 9, 11)
     label(farm, "OPERATING MODE", 20, 252, 220, 19, 10, C.muted, Enum.Font.GothamSemibold)
     uiRefs.modeBtn = button(farm, "FAST", 18, 275, 452, 36, C.purpleDark, 9, 12)
@@ -1815,6 +1950,7 @@ do
     uiRefs.setWebhookInterval = slider(systemPage,"WEBHOOK UPDATE INTERVAL",351,60,900,30,
         function(v) return string.format("%.1f min",v/60) end,
         function(v) if uiRefs.onWebhookSlide then uiRefs.onWebhookSlide(v) end end)
+    label(systemPage, "AUTO ENTER  ·  YBA Skip / Play watcher enabled on join", 20, 439, 446, 14, 10, C.cyan)
     local previewBox = box(activity, 18, 125, 452, 313, C.inset, 10)
     outlined(previewBox, C.softLine, 1, 0.45)
     label(previewBox, "LIVE LOG", 15, 11, 401, 17, 10, C.muted, Enum.Font.GothamSemibold)
@@ -1834,6 +1970,8 @@ do
             local b = uiRefs.tabButtons[name]
             b.BackgroundColor3 = active and C.purpleDark or C.canvas
             b.TextColor3 = active and C.text or C.dim
+            local marker=uiRefs.tabAccents and uiRefs.tabAccents[name]
+            if marker then marker.Visible=active end
         end
     end
     for name, navBtn in pairs(uiRefs.tabButtons) do
@@ -1843,10 +1981,10 @@ do
     uiRefs.paintToggle = function(b, yes)
         local entry = uiRefs.toggleIndicators[b]
         if not entry then return end
-        entry.shell.BackgroundColor3 = yes and Color3.fromRGB(39, 78, 69) or C.surface
+        entry.shell.BackgroundColor3 = yes and Color3.fromRGB(29, 77, 68) or C.surface
         entry.text.TextColor3 = yes and C.green or C.dim
         entry.text.Text = yes and "ON" or "OFF"
-        b.BackgroundColor3 = yes and Color3.fromRGB(26, 39, 43) or C.inset
+        b.BackgroundColor3 = yes and Color3.fromRGB(20, 34, 39) or C.inset
     end
     tab("farm")
     local scaler = Instance.new("UIScale")
@@ -1989,7 +2127,7 @@ function orbitTools.tickSession()
     for idx,info in ipairs(sorted) do
         local entry=Instance.new("Frame")
         entry.BorderSizePixel=0
-        entry.BackgroundColor3=Color3.fromRGB(24,27,43)
+        entry.BackgroundColor3=Color3.fromRGB(19,22,35)
         entry.BackgroundTransparency=idx%2==0 and 0.35 or 0.1
         entry.Size=UDim2.new(0.5,-10,0,57)
         entry.LayoutOrder=idx
@@ -2053,10 +2191,10 @@ end
 -- A full-screen, draggable-free session display carried as Roblox's teleport GUI.
 -- The settings menu uses a higher DisplayOrder, so the user can still edit options.
 do
-    local C={bg=Color3.fromRGB(10,12,23),panel=Color3.fromRGB(24,27,46),
-        border=Color3.fromRGB(73,67,111),muted=Color3.fromRGB(152,160,190),
-        white=Color3.fromRGB(243,245,255),aqua=Color3.fromRGB(122,232,208),
-        purple=Color3.fromRGB(155,126,252)}
+    local C={bg=Color3.fromRGB(7,9,16),panel=Color3.fromRGB(17,20,32),
+        border=Color3.fromRGB(53,46,83),muted=Color3.fromRGB(144,153,185),
+        white=Color3.fromRGB(244,243,255),aqua=Color3.fromRGB(108,226,214),
+        purple=Color3.fromRGB(163,111,255)}
     local function make(class,parent,props)
         local x=Instance.new(class)
         for k,v in pairs(props or {}) do x[k]=v end
@@ -2098,7 +2236,7 @@ do
         Size=UDim2.fromOffset(150,38),Text="VIEW GAME  ×",TextColor3=C.white,
         TextSize=12,Font=Enum.Font.GothamBold})
     round(fold,10)
-    local statusCard=make("Frame",container,{BackgroundColor3=Color3.fromRGB(36,33,61),
+    local statusCard=make("Frame",container,{BackgroundColor3=Color3.fromRGB(27,24,47),
         BorderSizePixel=0,Position=UDim2.new(0,0,0,96),Size=UDim2.new(1,0,0,110)})
     round(statusCard,15)
     make("UIStroke",statusCard,{Color=C.border,Thickness=1,Transparency=0.2})
@@ -2171,7 +2309,23 @@ local function updateStats()
     uiRefs.statsDetail.Text = string.format("%.1f pickups/min  •  Attempts: %d", perMinute, pickupAttempts)
     uiRefs.scanHint.Text = string.format("Prompts: %d  |  No prompt: %d  |  Capped: %d",
         orbitTools.scanStats.promptReady or 0, orbitTools.scanStats.noPrompt or 0, orbitTools.scanStats.capped or 0)
-    uiRefs.startBtn.Text = autoRunning and "●  FARM RUNNING" or "▶  START FARM"
+    if uiRefs.lastFarmToggleState ~= autoRunning then
+        uiRefs.lastFarmToggleState = autoRunning
+        uiRefs.farmToggle.Text = autoRunning and "■  STOP FARMING" or "▶  START FARMING"
+        uiRefs.farmState.Text = autoRunning and "ON" or "OFF"
+        uiRefs.farmState.TextColor3 = autoRunning and Color3.fromRGB(128, 246, 196)
+            or Color3.fromRGB(180, 164, 213)
+        TweenService:Create(uiRefs.farmToggle,TweenInfo.new(0.22,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{
+            BackgroundColor3=autoRunning and Color3.fromRGB(20, 72, 62)
+                or Color3.fromRGB(47, 32, 87)
+        }):Play()
+        if uiRefs.farmOutline then
+            TweenService:Create(uiRefs.farmOutline,TweenInfo.new(0.22,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{
+                Color=autoRunning and Color3.fromRGB(91, 226, 176)
+                    or Color3.fromRGB(166, 112, 255)
+            }):Play()
+        end
+    end
     uiRefs.runPill.Text = autoRunning and "●  RUNNING" or "●  IDLE"
     uiRefs.runPill.TextColor3 = autoRunning and Color3.fromRGB(120, 233, 178) or Color3.fromRGB(182, 188, 208)
 end
@@ -2191,7 +2345,7 @@ local function log(message)
     -- Keep a rolling record even if the game disconnects immediately afterwards.
     if type(writefile) == "function" and os.clock() - orbitTools.lastLogSave >= 0.75 then
         orbitTools.lastLogSave = os.clock()
-        pcall(writefile, "Truefarm_LITE_v14_Log.txt", table.concat(logs, "\n"))
+        pcall(writefile, "Truefarm_LITE_v15_Log.txt", table.concat(logs, "\n"))
     end
 end
 -- Read ping and smooth out brief spikes.
@@ -2513,7 +2667,7 @@ end
 
 function orbitTools.saveFarmLog()
     if type(writefile) ~= "function" then return end
-    pcall(writefile, "Truefarm_LITE_v14_Log.txt", table.concat(logs, "\n"))
+    pcall(writefile, "Truefarm_LITE_v15_Log.txt", table.concat(logs, "\n"))
 end
 
 -- Inventory must increase to count a confirmed acquisition. World-model removal
@@ -3880,8 +4034,10 @@ end
 
 -- Truefarm LITE controls. All GUI references live in uiRefs to avoid Luau's
 -- 200-local-register ceiling in the main chunk.
-connect(uiRefs.startBtn.MouseButton1Click, startFarm)
-connect(uiRefs.stopBtn.MouseButton1Click, stopFarm)
+connect(uiRefs.farmToggle.MouseButton1Click, function()
+    if autoRunning then stopFarm() else startFarm() end
+    updateStats()
+end)
 connect(uiRefs.scanBtn.MouseButton1Click, function()
     cachedReplicas, cachedCount, cachedMeshes = getReplicaNames()
     ensureTrackedItems()
@@ -4225,9 +4381,10 @@ connect(RunService.Heartbeat, function()
 end)
 orbitTools.updateEventStatus()
 orbitTools.installSpawnWatchers()
-log("Truefarm LITE v14 ready | Remote spawn hints + world scan | Direct Prompt | RightShift toggles GUI")
+orbitTools.startAutoPlay()
+log("Truefarm LITE v15 ready | Remote spawn hints + world scan | Direct Prompt | RightShift toggles GUI")
 if hopResume then
-    if orbitTools.setActivity then orbitTools.setActivity("Joining server · restoring session") end
+    if orbitTools.setActivity then orbitTools.setActivity("Joining server · auto Play + restoring session") end
     task.spawn(function()
         local deadline=os.clock()+35
         while alive and not autoRunning and os.clock()<deadline do
