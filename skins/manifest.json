@@ -1,6 +1,6 @@
 {
   "format": "TrueSight-Skins-v1",
-  "version": 2,
+  "version": 3,
   "updated": "2026-10-27",
   "skins": [
     {
@@ -17,7 +17,8 @@
       "model": "skins/fem-act-4/model.rbxm",
       "ready": true,
       "bytes": 32838,
-      "sha256": "c81a7b21d42797e8927e6af6054ffcbf06308b2932622967f88a1dfb660ac879"
+      "sha256": "c81a7b21d42797e8927e6af6054ffcbf06308b2932622967f88a1dfb660ac879",
+      "sync_id": 900000000002
     },
     {
       "id": "sp-funny",
@@ -25,7 +26,8 @@
       "model": "skins/sp-funny/model.rbxm",
       "ready": true,
       "bytes": 21124,
-      "sha256": "5aaa9a12f0451449385ffddb434ca86c2013bcf404876d8b2cd9bd010132914c"
+      "sha256": "5aaa9a12f0451449385ffddb434ca86c2013bcf404876d8b2cd9bd010132914c",
+      "sync_id": 900000000003
     },
     {
       "id": "shadow-crimson",
@@ -33,7 +35,8 @@
       "model": "skins/shadow-crimson/model.rbxm",
       "ready": true,
       "bytes": 130075,
-      "sha256": "8fc26c5d463bf08c2eaac0e4072a1304661ccbac7774864ddd7b0d6a0dc4966c"
+      "sha256": "8fc26c5d463bf08c2eaac0e4072a1304661ccbac7774864ddd7b0d6a0dc4966c",
+      "sync_id": 900000000004
     },
     {
       "id": "revenant-the-world",
@@ -41,7 +44,8 @@
       "model": "skins/revenant-the-world/model.rbxm",
       "ready": true,
       "bytes": 200955,
-      "sha256": "72c25fa1ba139b068d80b1010c6f3069376ba4cd57773982d64b6c4def5aff0c"
+      "sha256": "72c25fa1ba139b068d80b1010c6f3069376ba4cd57773982d64b6c4def5aff0c",
+      "sync_id": 900000000005
     },
     {
       "id": "overseer-experience-requiem",
@@ -49,7 +53,8 @@
       "model": "skins/overseer-experience-requiem/model.rbxm",
       "ready": true,
       "bytes": 272112,
-      "sha256": "d9196168e12ef15502244c6a6723b50c24a2933aecf7429885de0f3771001cf8"
+      "sha256": "d9196168e12ef15502244c6a6723b50c24a2933aecf7429885de0f3771001cf8",
+      "sync_id": 900000000006
     },
     {
       "id": "twoh",
@@ -57,7 +62,8 @@
       "model": "skins/twoh/model.rbxm",
       "ready": true,
       "bytes": 165652,
-      "sha256": "20ba0ccf975b64ff738b0c019c81843d2c53b71f22cd78f77714437c17c6cc05"
+      "sha256": "20ba0ccf975b64ff738b0c019c81843d2c53b71f22cd78f77714437c17c6cc05",
+      "sync_id": 900000000007
     },
     {
       "id": "twau",
@@ -65,7 +71,8 @@
       "model": "skins/twau/model.rbxm",
       "ready": true,
       "bytes": 259230,
-      "sha256": "692adb9a83f6d74768d1dd22a1800e33901827be0191223fc1909b3873fcda78"
+      "sha256": "692adb9a83f6d74768d1dd22a1800e33901827be0191223fc1909b3873fcda78",
+      "sync_id": 900000000008
     }
   ]
 }
