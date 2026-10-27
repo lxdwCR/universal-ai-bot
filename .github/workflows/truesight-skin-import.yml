@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - skins/import/seven-skins.zip
+      - "skins/import/*.zip"
+      - ".github/workflows/truesight-skin-import.yml"
 
 permissions:
   contents: write
@@ -21,10 +22,12 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, pathlib, zipfile
           root = pathlib.Path(".")
-          package = root / "skins/import/seven-skins.zip"
+          package = root / "skins/import/NEWSKINS.zip"
+          if not package.is_file():
+              package = root / "skins/import/seven-skins.zip"
           manifest_path = root / "skins/manifest.json"
           if not package.is_file():
-              raise SystemExit("Upload skins/import/seven-skins.zip first")
+              raise SystemExit("Upload skins/import/NEWSKINS.zip or seven-skins.zip first")
           manifest = json.loads(manifest_path.read_text())
           if manifest.get("format") != "TrueSight-Skins-v1":
               raise SystemExit("Unexpected manifest format")
