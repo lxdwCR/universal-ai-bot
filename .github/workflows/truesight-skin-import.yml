@@ -1,0 +1,66 @@
+name: Import TrueSight R15 skins
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - skins/import/seven-skins.zip
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Validate and unpack skin bundle
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, zipfile
+          root = pathlib.Path(".")
+          package = root / "skins/import/seven-skins.zip"
+          manifest_path = root / "skins/manifest.json"
+          if not package.is_file():
+              raise SystemExit("Upload skins/import/seven-skins.zip first")
+          manifest = json.loads(manifest_path.read_text())
+          if manifest.get("format") != "TrueSight-Skins-v1":
+              raise SystemExit("Unexpected manifest format")
+          done = []
+          with zipfile.ZipFile(package) as archive:
+              for skin in manifest["skins"]:
+                  if skin["id"] == "spoh":
+                      continue
+                  path = skin["model"]
+                  if not path.startswith("skins/") or ".." in path:
+                      raise SystemExit("Unsafe skin path")
+                  info = archive.getinfo(path)
+                  if info.file_size > 15 * 1024 * 1024:
+                      raise SystemExit("Skin is too large: " + path)
+                  data = archive.read(path)
+                  if not data.startswith(b"<roblox!\\x89\\xff\\r\\n\\x1a\\n"):
+                      raise SystemExit("Invalid RBXM: " + path)
+                  if hashlib.sha256(data).hexdigest() != skin["sha256"]:
+                      raise SystemExit("Checksum mismatch: " + path)
+                  destination = root / path
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  destination.write_bytes(data)
+                  skin["ready"] = True
+                  done.append(path)
+          if len(done) != 7:
+              raise SystemExit("Expected seven validated models")
+          manifest["version"] = int(manifest.get("version", 1)) + 1
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+          print("Imported:", *done, sep="\n  ")
+          PY
+      - name: Commit verified models
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add skins/manifest.json skins/*/model.rbxm
+          if ! git diff --cached --quiet; then
+            git commit -m "Import seven verified TrueSight R15 skins"
+            git push
+          fi
