@@ -40,7 +40,7 @@ jobs:
                   if info.file_size > 15 * 1024 * 1024:
                       raise SystemExit("Skin is too large: " + path)
                   data = archive.read(path)
-                  if not data.startswith(b"<roblox!\\x89\\xff\\r\\n\\x1a\\n"):
+                  if not data.startswith(bytes.fromhex("3c726f626c6f782189ff0d0a1a0a")):
                       raise SystemExit("Invalid RBXM: " + path)
                   if hashlib.sha256(data).hexdigest() != skin["sha256"]:
                       raise SystemExit("Checksum mismatch: " + path)
