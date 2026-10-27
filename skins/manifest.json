@@ -1,0 +1,71 @@
+{
+  "format": "TrueSight-Skins-v1",
+  "version": 1,
+  "updated": "2026-10-27",
+  "skins": [
+    {
+      "id": "spoh",
+      "name": "Star Platinum Over Heaven",
+      "model": "skins/spoh/spohr15.rbxm",
+      "vfx": "skins/spoh/vfx.json",
+      "ready": true,
+      "sync_id": 900000000001
+    },
+    {
+      "id": "fem-act-4",
+      "name": "Fem Act 4",
+      "model": "skins/fem-act-4/model.rbxm",
+      "ready": false,
+      "bytes": 32838,
+      "sha256": "c81a7b21d42797e8927e6af6054ffcbf06308b2932622967f88a1dfb660ac879"
+    },
+    {
+      "id": "sp-funny",
+      "name": "SP Funny",
+      "model": "skins/sp-funny/model.rbxm",
+      "ready": false,
+      "bytes": 21124,
+      "sha256": "5aaa9a12f0451449385ffddb434ca86c2013bcf404876d8b2cd9bd010132914c"
+    },
+    {
+      "id": "shadow-crimson",
+      "name": "Shadow Crimson",
+      "model": "skins/shadow-crimson/model.rbxm",
+      "ready": false,
+      "bytes": 130075,
+      "sha256": "8fc26c5d463bf08c2eaac0e4072a1304661ccbac7774864ddd7b0d6a0dc4966c"
+    },
+    {
+      "id": "revenant-the-world",
+      "name": "Revenant The World",
+      "model": "skins/revenant-the-world/model.rbxm",
+      "ready": false,
+      "bytes": 200955,
+      "sha256": "72c25fa1ba139b068d80b1010c6f3069376ba4cd57773982d64b6c4def5aff0c"
+    },
+    {
+      "id": "overseer-experience-requiem",
+      "name": "Overseer Experience Requiem",
+      "model": "skins/overseer-experience-requiem/model.rbxm",
+      "ready": false,
+      "bytes": 272112,
+      "sha256": "d9196168e12ef15502244c6a6723b50c24a2933aecf7429885de0f3771001cf8"
+    },
+    {
+      "id": "twoh",
+      "name": "The World Over Heaven",
+      "model": "skins/twoh/model.rbxm",
+      "ready": false,
+      "bytes": 165652,
+      "sha256": "20ba0ccf975b64ff738b0c019c81843d2c53b71f22cd78f77714437c17c6cc05"
+    },
+    {
+      "id": "twau",
+      "name": "The World Alternate Universe",
+      "model": "skins/twau/model.rbxm",
+      "ready": false,
+      "bytes": 259230,
+      "sha256": "692adb9a83f6d74768d1dd22a1800e33901827be0191223fc1909b3873fcda78"
+    }
+  ]
+}
